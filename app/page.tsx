@@ -69,7 +69,7 @@ function useModelViewerReady() {
 
 // --- Known good demo GLBs (textures embedded; CORS‑safe) ---
 const SAMPLE_DUCK =
-  'https://rawcdn.githack.com/KhronosGroup/glTF-Sample-Models/master/2.0/Duck/glTF-Binary/Duck.glb';
+  'https://drive.google.com/file/d/1_Qa0qlvg7Q1Itl_JiLKqBGMw7kPZPpCd/view?usp=drive_link';
 const SAMPLE_HELMET =
   'https://rawcdn.githack.com/KhronosGroup/glTF-Sample-Models/master/2.0/DamagedHelmet/glTF-Binary/DamagedHelmet.glb';
 const SAMPLE_HELMET_GLTF_EXT =
