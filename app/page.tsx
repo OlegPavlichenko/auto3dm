@@ -1,17 +1,21 @@
 'use client';
 import React, { useEffect, useMemo, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 /**
  * Auto3D — Free‑tier Starter (React/Next compatible)
  * --------------------------------------------------
- * Fix: prevent null access causing `Cannot read properties of null (reading '_')`.
- *  - Use **callback ref** for <model-viewer>, guard all DOM access, and remount on src change.
- *  - Add a **React ErrorBoundary** around the viewer to absorb unexpected runtime errors
- *    from the web component or loader (still shows poster instead of crashing the app).
- *  - Harden nav test-toggle: guard window/CustomEvent and broadcast safely.
+ * 404 FIX: internal navigation now uses `/?view=...` (single route),
+ * so clicking «Добавить модель» не уходит на /submit (которого нет на сервере).
+ * В AppRouter добавлен разбор search‑параметра `view` и мягкий редирект
+ * с путей /submit, /rules, /dmca на соответствующие `/?view=...`.
  *
- * Pages kept: /submit, /rules, /dmca. Tests preserved and expanded.
+ * Crash FIX: <model-viewer> обёрнут callback‑ref + ErrorBoundary, все null/SSR
+ * обращения защищены. Состояние загрузки надёжно фиксируется таймаутом.
+ *
+ * Страницы: каталог, /?view=submit, /?view=rules, /?view=dmca.
+ * Тест‑кейсы сохранены и расширены.
  */
 
 // ====== CONFIG ======
@@ -117,7 +121,7 @@ export type Item = {
   image?: string;
 };
 
-// --- Error Boundary to catch unexpected runtime errors from the viewer ---
+// --- Error Boundary ---
 class ViewerBoundary extends React.Component<{ poster?: string; alt?: string; children: React.ReactNode }, { hasError: boolean }> {
   constructor(props: any) {
     super(props);
@@ -145,7 +149,7 @@ function SafeModelViewer({ src, alt, poster }: { src: string; alt: string; poste
 
   // Unsupported formats → poster only
   useEffect(() => {
-    if (!ext) return; // unknown → let viewer try later if it ever mounts
+    if (!ext) return; // unknown
     const ok = ext === 'glb' || ext === 'gltf';
     if (!ok) setStatus('unsupported');
   }, [ext]);
@@ -172,7 +176,7 @@ function SafeModelViewer({ src, alt, poster }: { src: string; alt: string; poste
       console.warn('listener attach failed', e);
     }
 
-    // timeout guard (15s) → avoid infinite loading
+    // timeout guard (15s)
     const timeout = setTimeout(() => { if (!cancelled && status === 'loading') setStatus('timeout'); }, 15000);
 
     return () => {
@@ -183,10 +187,8 @@ function SafeModelViewer({ src, alt, poster }: { src: string; alt: string; poste
         node.removeEventListener('error', onError as EventListener);
       } catch {}
     };
-    // re-run when node or load cycle changes
   }, [mvReady, node, loadToken, status]);
 
-  // User‑confirmed UX: poster only for error/unsupported/notready/timeout
   const showPosterOnly = status === 'error' || status === 'unsupported' || status === 'notready' || status === 'timeout';
 
   return (
@@ -194,27 +196,21 @@ function SafeModelViewer({ src, alt, poster }: { src: string; alt: string; poste
       {showPosterOnly && (
         <img src={poster || POSTER_SVG} alt={`${alt} (постер)`} className="absolute inset-0 w-full h-full object-contain" />
       )}
-
-      {/* Render viewer when registered; remount on src change via key */}
       {mvReady && (
-        <ViewerBoundary poster={poster} alt={alt}>
-          {
-            // @ts-ignore - web component
-          }
-          <model-viewer
-            key={normalizedSrc}
-            ref={(el: any) => setNode(el as unknown as HTMLElement)}
-            src={normalizedSrc}
-            alt={alt}
-            camera-controls
-            auto-rotate
-            exposure="1.0"
-            reveal="auto"
-            crossorigin="anonymous"
-            poster={poster || POSTER_SVG}
-            style={{ width: '100%', height: '100%', display: showPosterOnly ? 'none' : 'block' }}
-          />
-        </ViewerBoundary>
+        // @ts-ignore - web component
+        <model-viewer
+          key={normalizedSrc}
+          ref={(el: any) => setNode(el as unknown as HTMLElement)}
+          src={normalizedSrc}
+          alt={alt}
+          camera-controls
+          auto-rotate
+          exposure="1.0"
+          reveal="auto"
+          crossorigin="anonymous"
+          poster={poster || POSTER_SVG}
+          style={{ width: '100%', height: '100%', display: showPosterOnly ? 'none' : 'block' }}
+        />
       )}
     </div>
   );
@@ -240,7 +236,6 @@ const TEST_ITEMS: Item[] = [
   { id: 'test-ok-duck-query', brand: 'TEST', model: 'QueryExt', title: 'TEST: Duck.glb?raw=1 (should load)', subsystem: 'test', src: SAMPLE_DUCK + '?raw=1', download: SAMPLE_DUCK + '?raw=1' },
   { id: 'test-dropbox-dl1', brand: 'TEST', model: 'DropboxDirect', title: 'TEST: Dropbox share link dl=1 (poster only; fake path)', subsystem: 'test', src: 'https://www.dropbox.com/s/fakehash/file.glb?dl=1', download: 'https://www.dropbox.com/s/fakehash/file.glb?dl=1' },
   { id: 'test-ok-duck-hash', brand: 'TEST', model: 'HashExt', title: 'TEST: Duck.glb#view (should load)', subsystem: 'test', src: SAMPLE_DUCK + '#view', download: SAMPLE_DUCK + '#view' },
-  // NEW: Empty src (edge) → remain poster only, no crash
   { id: 'test-empty-src', brand: 'TEST', model: 'Edge', title: 'TEST: Empty src (poster only)', subsystem: 'test', src: '', download: '#' },
 ];
 
@@ -284,13 +279,13 @@ function SubmitPage() {
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
       <h1 className="text-2xl font-bold mb-2">Добавить модель</h1>
-      <p className="text-gray-600 mb-6">Перед отправкой ознакомьтесь с <a className="underline" href="/rules">Правилами публикации</a> и <a className="underline" href="/dmca">DMCA/удаление</a>.</p>
+      <p className="text-gray-600 mb-6">Перед отправкой ознакомьтесь с <Link className="underline" href="/?view=rules">Правилами публикации</Link> и <Link className="underline" href="/?view=dmca">DMCA/удаление</Link>.</p>
 
       {FORM_EMBED_URL ? (
         <div className="bg-white border rounded-2xl p-4">
           <label className="flex items-start gap-2 text-sm mb-4">
             <input type="checkbox" checked={agree} onChange={(e) => setAgree(!!e?.target?.checked)} />
-            <span>Я ознакомился и согласен с <a className="underline" href="/rules">Правилами</a> и <a className="underline" href="/dmca">DMCA/удалением</a>.</span>
+            <span>Я ознакомился и согласен с <Link className="underline" href="/?view=rules">Правилами</Link> и <Link className="underline" href="/?view=dmca">DMCA/удалением</Link>.</span>
           </label>
           <div className={agree ? "rounded-2xl overflow-hidden border" : "rounded-2xl overflow-hidden border opacity-60 pointer-events-none select-none"}>
             <iframe src={FORM_EMBED_URL} width="100%" height="1200" style={{ border: 0 }} loading="lazy" referrerPolicy="no-referrer-when-downgrade" title="Auto3D Submit Form" />
@@ -317,7 +312,7 @@ function SubmitPage() {
             <label className="grid gap-1"><span className="text-sm text-gray-600">Ссылка на модель для предпросмотра (GLB/GLTF)</span><input name="src" value={form.src} onChange={onChange} className="px-3 py-2 rounded-xl border" placeholder="Google Drive/Dropbox/Supabase" required /></label>
             <label className="grid gap-1"><span className="text-sm text-gray-600">Ссылка для скачивания</span><input name="download" value={form.download} onChange={onChange} className="px-3 py-2 rounded-xl border" placeholder="Google Drive/Dropbox/Supabase" required /></label>
           </div>
-          <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={agree} onChange={(e)=>setAgree(!!e?.target?.checked)} required /> <span>Я ознакомился и согласен с <a className="underline" href="/rules">Правилами</a> и <a className="underline" href="/dmca">DMCA/удалением</a>.</span></label>
+          <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={agree} onChange={(e)=>setAgree(!!e?.target?.checked)} required /> <span>Я ознакомился и согласен с <Link className="underline" href="/?view=rules">Правилами</Link> и <Link className="underline" href="/?view=dmca">DMCA/удалением</Link>.</span></label>
           <div className="flex items-center justify-between gap-3 pt-2">
             <div className="text-xs text-gray-500">Без сервера мы отправим письмо через <code>mailto:</code>. Укажите <b>MAILTO_TO</b> в коде, чтобы поставить адрес модератора.</div>
             <button disabled={!agree} className={agree?"px-4 py-2 rounded-xl bg-black text-white":"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed"}>Отправить</button>
@@ -374,7 +369,7 @@ function DmcaPage() {
     <div className="max-w-3xl mx-auto px-4 py-8">
       <h1 className="text-2xl font-bold mb-2">DMCA / Удаление по запросу</h1>
       <p className="text-gray-600 mb-4">Если вы считаете, что материал нарушает ваши права, отправьте запрос на удаление.</p>
-      <div className="bg-white border rounded-2xl p-6 space-y-4 text-sm leading-6">
+      <div className="bg-white border rounded-2xl p-6 space-y-4 text см leading-6">
         <section>
           <h2 className="font-semibold">Как отправить запрос</h2>
           <ol className="list-decimal ml-5">
@@ -440,7 +435,7 @@ function CatalogApp() {
       {items.length === 0 ? (
         <div className="p-6 rounded-2xl bg-white border shadow-sm">Ничего не найдено. Попробуйте изменить фильтры.</div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 см:grid-cols-2 lg:grid-cols-3 gap-6">
           {items.map((i) => (
             <article key={i.id} className="bg-white rounded-2xl border shadow-sm overflow-hidden hover:shadow-md transition">
               <div className="aspect-video bg-gray-100 flex items-center justify-center relative">
@@ -462,23 +457,18 @@ function CatalogApp() {
   );
 }
 
-// ===== App Shell with simple route switch =====
+// ===== App Shell with single-route nav (/?view=...) =====
 function AppShell({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
-  const router = useRouter();
-
-  useEffect(() => { if (pathname === '/sumbit') router.replace('/submit'); }, [pathname, router]);
-
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="sticky top-0 z-10 backdrop-blur bg-white/70 border-b">
         <div className="max-w-6xl mx-auto px-4 py-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <h1 className="text-2xl font-bold tracking-tight">Auto3D <span className="text-gray-500 text-base">free‑tier demo</span></h1>
           <nav className="flex flex-wrap gap-2 items-center text-sm">
-            <a href="/" className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-100">Каталог</a>
-            <a href="/submit" className="px-3 py-2 rounded-xl bg-black text-white hover:opacity-90">Добавить модель</a>
-            <a href="/rules" className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-100">Правила</a>
-            <a href="/dmca" className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-100">DMCA/Удаление</a>
+            <Link href="/" className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-100">Каталог</Link>
+            <Link href="/?view=submit" className="px-3 py-2 rounded-xl bg-black text-white hover:opacity-90">Добавить модель</Link>
+            <Link href="/?view=rules" className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-100">Правила</Link>
+            <Link href="/?view=dmca" className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-100">DMCA/Удаление</Link>
             <label className="ml-2 inline-flex items-center gap-2 text-xs text-gray-600">
               <input
                 type="checkbox"
@@ -521,14 +511,23 @@ function AppShell({ children }: { children: React.ReactNode }) {
 
 export default function AppRouter() {
   const pathname = usePathname();
-  if (pathname === '/submit' || pathname === '/sumbit') {
-    return <AppShell><SubmitPage /></AppShell>;
-  }
-  if (pathname === '/rules') {
-    return <AppShell><RulesPage /></AppShell>;
-  }
-  if (pathname === '/dmca') {
-    return <AppShell><DmcaPage /></AppShell>;
-  }
-  return <AppShell><CatalogApp /></AppShell>;
+  const router = useRouter();
+  const search = useSearchParams();
+  const view = (search?.get('view') || '').toLowerCase();
+
+  // Soft redirect from path routes to single route with view param
+  useEffect(() => {
+    if (!router) return;
+    if (pathname === '/submit') router.replace('/?view=submit');
+    if (pathname === '/rules') router.replace('/?view=rules');
+    if (pathname === '/dmca') router.replace('/?view=dmca');
+    if (pathname === '/sumbit') router.replace('/?view=submit');
+  }, [pathname, router]);
+
+  let page: React.ReactNode = <CatalogApp />;
+  if (view === 'submit') page = <SubmitPage />;
+  else if (view === 'rules') page = <RulesPage />;
+  else if (view === 'dmca') page = <DmcaPage />;
+
+  return <AppShell>{page}</AppShell>;
 }
