@@ -223,8 +223,8 @@ const initialItems: Item[] = [
     model: 'Carnival',
     title: 'Cupholder insert (demo)',
     subsystem: 'interior',
-    src: https://drive.google.com/file/d/1_Qa0qlvg7Q1Itl_JiLKqBGMw7kPZPpCd/view?usp=drive_link,
-    download: https://drive.google.com/file/d/1_Qa0qlvg7Q1Itl_JiLKqBGMw7kPZPpCd/view?usp=drive_link,
+    src: 'https://drive.google.com/file/d/1_Qa0qlvg7Q1Itl_JiLKqBGMw7kPZPpCd/view?usp=drive_link',
+    download: 'https://drive.google.com/file/d/1_Qa0qlvg7Q1Itl_JiLKqBGMw7kPZPpCd/view?usp=drive_link',
   },
   {
     id: 'toyota-bb-hook',
