@@ -259,18 +259,42 @@ function useView() {
   const [view, setView] = useState<string>('');
   useEffect(() => {
     if (typeof window === 'undefined') return;
+
+    // Patch history API once to emit a custom event on push/replace
+    const w = window as any;
+    if (!w.__auto3d_history_patched) {
+      const wrap = (fn: any) => function(this: any, ...args: any[]) {
+        const ret = fn.apply(this, args);
+        try { window.dispatchEvent(new Event('url-change')); } catch {}
+        return ret;
+      };
+      try {
+        history.pushState = wrap(history.pushState);
+        history.replaceState = wrap(history.replaceState);
+        w.__auto3d_history_patched = true;
+      } catch {}
+    }
+
     const sync = () => {
       const url = new URL(window.location.href);
       const pathname = url.pathname.toLowerCase();
-      if (pathname === '/submit' || pathname === '/sumbit') { url.pathname = '/'; url.searchParams.set('view','submit'); window.history.replaceState({}, '', url.toString()); }
-      if (pathname === '/rules') { url.pathname = '/'; url.searchParams.set('view','rules'); window.history.replaceState({}, '', url.toString()); }
-      if (pathname === '/dmca') { url.pathname = '/'; url.searchParams.set('view','dmca'); window.history.replaceState({}, '', url.toString()); }
+      // Soft redirects from path routes to single route with view param
+      if (pathname === '/submit' || pathname === '/sumbit') { url.pathname = '/'; url.searchParams.set('view','submit'); history.replaceState({}, '', url.toString()); }
+      if (pathname === '/rules') { url.pathname = '/'; url.searchParams.set('view','rules'); history.replaceState({}, '', url.toString()); }
+      if (pathname === '/dmca') { url.pathname = '/'; url.searchParams.set('view','dmca'); history.replaceState({}, '', url.toString()); }
       setView((url.searchParams.get('view') || '').toLowerCase());
     };
+
     sync();
-    const onPop = () => sync();
-    window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
+    const onChange = () => sync();
+    window.addEventListener('popstate', onChange);
+    window.addEventListener('hashchange', onChange);
+    window.addEventListener('url-change', onChange);
+    return () => {
+      window.removeEventListener('popstate', onChange);
+      window.removeEventListener('hashchange', onChange);
+      window.removeEventListener('url-change', onChange);
+    };
   }, []);
   return view;
 }
@@ -463,14 +487,30 @@ function CatalogApp() {
       try { const url = new URL(window.location.href); setShowTests(url.searchParams.get('tests') === '1'); } catch {}
     };
     syncFromUrl();
+
     setLocalItems(readLocalItems());
     const onLocal = () => setLocalItems(readLocalItems());
     window.addEventListener('local-items-updated', onLocal);
     window.addEventListener('storage', onLocal);
+
+    // React to header checkbox (tests toggle)
+    const onTests = (e: any) => setShowTests(!!e?.detail?.checked);
+    window.addEventListener('tests-toggle', onTests as any);
+    // React to URL changes from Link navigation
+    const onUrl = () => syncFromUrl();
+    window.addEventListener('url-change', onUrl);
+
     (async () => { try { const rows = await fetchRemoteItems(); setRemoteItems(rows); } catch (e) { console.warn(e); } })();
     const onRemote = async () => { try { const rows = await fetchRemoteItems(); setRemoteItems(rows); } catch {} };
     window.addEventListener('remote-items-updated', onRemote);
-    return () => { window.removeEventListener('local-items-updated', onLocal); window.removeEventListener('storage', onLocal); window.removeEventListener('remote-items-updated', onRemote); };
+
+    return () => {
+      window.removeEventListener('local-items-updated', onLocal);
+      window.removeEventListener('storage', onLocal);
+      window.removeEventListener('tests-toggle', onTests as any);
+      window.removeEventListener('url-change', onUrl);
+      window.removeEventListener('remote-items-updated', onRemote);
+    };
   }, []);
 
   const catalog = useMemo(() => {
