@@ -26,6 +26,13 @@ const SUPABASE_URL: string = (typeof process !== 'undefined' && process?.env?.NE
 const SUPABASE_ANON_KEY: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_SUPABASE_ANON_KEY) || "";
 const HAS_SUPABASE = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
 
+// Meshy API (AI retexturing: uploads STL/OBJ/FBX/GLTF/GLB and returns textured GLB)
+// Docs: https://docs.meshy.ai/en/api/retexture
+// In dev можно использовать тестовый ключ из доков Meshy (возвращает демонстрационные результаты):
+// 'msy_dummy_api_key_for_test_mode_12345678'
+const MESHY_API_KEY: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_MESHY_API_KEY) || 'msy_dummy_api_key_for_test_mode_12345678';
+const HAS_MESHY = !!MESHY_API_KEY;
+
 const FORM_EMBED_URL = ""; // Google Form embed URL (опционально)
 const MAILTO_TO = ""; // если пусто — локальная кнопка mailto не появится
 const CONTACT_EMAIL = MAILTO_TO || "contact@example.com"; // для Rules/DMCA
@@ -301,10 +308,22 @@ function useView() {
 
 // ===== Pages =====
 function SubmitPage() {
+  // Main metadata form (for card fields)
   const [form, setForm] = useState({ author: '', email: '', brand: '', model: '', title: '', subsystem: '', description: '', src: '', download: '', license: 'CC BY' });
   const [agree, setAgree] = useState(false);
   const [status, setStatus] = useState<string>("");
   const subsystems = ['interior', 'body', 'electrical', 'suspension', 'engine', 'transmission'];
+
+  // Meshy section state
+  const [meshFile, setMeshFile] = useState<File | null>(null);
+  const [styleText, setStyleText] = useState<string>('black rubber with subtle hex pattern, slightly worn');
+  const [styleImageUrl, setStyleImageUrl] = useState<string>('');
+  const [useOriginalUV, setUseOriginalUV] = useState<boolean>(false); // STL обычно без UV → лучше генерировать новые
+  const [enablePBR, setEnablePBR] = useState<boolean>(true);
+  const [autoPublishRemote, setAutoPublishRemote] = useState<boolean>(false);
+  const [meshyTaskId, setMeshyTaskId] = useState<string>('');
+  const [meshyProgress, setMeshyProgress] = useState<number>(0);
+  const [meshyPhase, setMeshyPhase] = useState<'idle'|'upload'|'queue'|'run'|'succeeded'|'failed'>('idle');
 
   const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e?.target ?? ({} as any);
@@ -312,14 +331,14 @@ function SubmitPage() {
     setForm((s) => ({ ...s, [name]: value }));
   };
 
-  const makeItem = (): Item => ({
+  const makeItem = (glbUrl?: string): Item => ({
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    brand: form.brand.trim(),
-    model: form.model.trim(),
-    title: form.title.trim(),
-    subsystem: form.subsystem,
-    src: toDirectLink(form.src.trim()),
-    download: toDirectLink(form.download.trim() || form.src.trim()),
+    brand: form.brand.trim() || 'Custom',
+    model: form.model.trim() || 'Model',
+    title: form.title.trim() || (glbUrl ? 'Uploaded via Meshy' : 'Custom model'),
+    subsystem: form.subsystem || 'interior',
+    src: toDirectLink(glbUrl || form.src.trim()),
+    download: toDirectLink(form.download.trim() || glbUrl || form.src.trim()),
   });
 
   const addLocal = () => {
@@ -362,10 +381,124 @@ function SubmitPage() {
     if (typeof window !== 'undefined') window.location.href = href;
   };
 
+  // === Meshy integration ===
+  async function fileToDataURI(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onerror = () => reject(fr.error);
+      fr.onload = () => {
+        try {
+          let v = String(fr.result || '');
+          v = v.replace(/^data:[^;]+;base64,/, 'data:application/octet-stream;base64,');
+          resolve(v);
+        } catch (e) { reject(e); }
+      };
+      fr.readAsDataURL(file);
+    });
+  }
+
+  async function meshyCreateRetextureTask(modelDataURI: string, textPrompt: string, imageUrl: string, enableOriginalUV: boolean, enablePbr: boolean): Promise<string> {
+    const payload: any = { model_url: modelDataURI, enable_original_uv: enableOriginalUV, enable_pbr: enablePbr };
+    if (imageUrl) payload.image_style_url = imageUrl; else payload.text_style_prompt = textPrompt || 'generic automotive plastic';
+    const res = await fetch('https://api.meshy.ai/openapi/v1/retexture', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${MESHY_API_KEY}` },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`Meshy create failed: ${res.status}`);
+    const data = await res.json();
+    return data.result as string; // task id
+  }
+
+  async function meshyGetTask(taskId: string): Promise<any> {
+    const res = await fetch(`https://api.meshy.ai/openapi/v1/retexture/${taskId}`, { headers: { Authorization: `Bearer ${MESHY_API_KEY}` } });
+    if (!res.ok) throw new Error(`Meshy status failed: ${res.status}`);
+    return res.json();
+  }
+
+  async function startMeshyPipeline() {
+    if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
+    if (!meshFile) { setStatus('Выберите файл STL/OBJ/FBX/GLTF/GLB.'); return; }
+    try {
+      setMeshyPhase('upload'); setStatus('Подготовка файла…'); setMeshyProgress(0);
+      const dataURI = await fileToDataURI(meshFile);
+      setMeshyPhase('queue'); setStatus('Создание задачи на Meshy…');
+      const taskId = await meshyCreateRetextureTask(dataURI, styleText, styleImageUrl, useOriginalUV, enablePBR);
+      setMeshyTaskId(taskId);
+      setMeshyPhase('run'); setStatus('Задача создана. Ожидаем результат…');
+
+      // Polling loop
+      let done = false;
+      for (let i = 0; i < 300; i++) { // ~25 минут при 5с шаге
+        const t = await meshyGetTask(taskId);
+        const st = String(t.status || '').toUpperCase();
+        const pr = Number(t.progress || 0);
+        setMeshyProgress(isFinite(pr) ? pr : 0);
+        if (st === 'SUCCEEDED') {
+          done = true;
+          setMeshyPhase('succeeded');
+          const glbUrl: string | undefined = t?.model_urls?.glb;
+          const thumb: string | undefined = t?.thumbnail_url;
+          if (!glbUrl) throw new Error('Meshy вернул задачу без ссылки на GLB.');
+
+          const item = makeItem(glbUrl);
+          addLocalItem(item);
+
+          if (autoPublishRemote && HAS_SUPABASE) { try { await insertRemoteItem(item); } catch (e) { console.warn(e); } }
+
+          setForm((s) => ({ ...s, src: glbUrl, download: glbUrl, title: s.title || 'Textured via Meshy' }));
+          setStatus('Готово! GLB получен и добавлен в каталог.');
+          break;
+        }
+        if (st === 'FAILED') { setMeshyPhase('failed'); setStatus(t?.task_error?.message || 'Meshy: задача завершилась с ошибкой'); break; }
+        await new Promise(r => setTimeout(r, 5000));
+      }
+      if (!done && meshyPhase !== 'failed') setStatus('Время ожидания вышло. Попробуйте позже.');
+    } catch (e: any) {
+      console.error(e);
+      setMeshyPhase('failed');
+      setStatus(`Ошибка: ${e?.message || e}`);
+    }
+  }
+
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
       <h1 className="text-2xl font-bold mb-2">Добавить модель</h1>
       <p className="text-gray-600 mb-6">Перед отправкой ознакомьтесь с <Link className="underline" href="/?view=rules">Правилами публикации</Link> и <Link className="underline" href="/?view=dmca">DMCA/удаление</Link>.</p>
+
+      <div className="bg-white border rounded-2xl p-6 grid gap-4 mb-8">
+        <div className="flex items-center gap-2">
+          <h2 className="text-lg font-semibold">Автотекстуринг (Meshy) — STL → GLB с текстурами</h2>
+          <span className="text-xs px-2 py-0.5 rounded-full border">{HAS_MESHY ? 'ключ найден' : 'test‑mode'}</span>
+        </div>
+        <label className="grid gap-1">
+          <span className="text-sm text-gray-600">Файл модели (STL/OBJ/FBX/GLTF/GLB)</span>
+          <input type="file" accept=".stl,.obj,.fbx,.gltf,.glb" onChange={(e)=>setMeshFile(e.target.files?.[0]||null)} className="px-3 py-2 rounded-xl border" />
+        </label>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="grid gap-1"><span className="text-sm text-gray-600">Стиль (текстовое описание)</span><input value={styleText} onChange={(e)=>setStyleText(e.target.value)} className="px-3 py-2 rounded-xl border" placeholder="чёрный пластик с лёгкой матовой фактурой" /></label>
+          <label className="grid gap-1"><span className="text-sm text-gray-600">Style Image URL (опционально)</span><input value={styleImageUrl} onChange={(e)=>setStyleImageUrl(e.target.value)} className="px-3 py-2 rounded-xl border" placeholder="Ссылка на картинку-референс" /></label>
+        </div>
+        <div className="flex flex-wrap items-center gap-4 text-sm">
+          <label className="inline-flex items-center gap-2"><input type="checkbox" checked={useOriginalUV} onChange={(e)=>setUseOriginalUV(!!e.target.checked)} /> Использовать исходные UV (если есть)</label>
+          <label className="inline-flex items-center gap-2"><input type="checkbox" checked={enablePBR} onChange={(e)=>setEnablePBR(!!e.target.checked)} /> Сгенерировать PBR‑карты</label>
+          {HAS_SUPABASE && (
+            <label className="inline-flex items-center gap-2"><input type="checkbox" checked={autoPublishRemote} onChange={(e)=>setAutoPublishRemote(!!e.target.checked)} /> Сразу опубликовать в общий каталог (Supabase)</label>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={startMeshyPipeline} disabled={!meshFile || !agree} className={(!meshFile || !agree)?"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed":"px-4 py-2 rounded-xl bg-black text-white"}>Сделать GLB (Meshy)</button>
+          <span className="text-xs text-gray-500">После завершения карточка добавится автоматически.</span>
+        </div>
+        {meshyPhase !== 'idle' && (
+          <div className="text-sm text-gray-700 bg-gray-50 border rounded-xl p-3">
+            <div>Статус: <b>{meshyPhase}</b>{meshyTaskId?` • task ${meshyTaskId}`:''}</div>
+            <div className="mt-2 h-2 bg-gray-200 rounded">
+              <div className="h-2 bg-black rounded" style={{width: `${Math.max(2,Math.min(100,meshyProgress))}%`}} />
+            </div>
+          </div>
+        )}
+      </div>
 
       <form onSubmit={MAILTO_TO ? mailtoSubmit : (e)=>e.preventDefault()} className="bg-white border rounded-2xl p-6 grid gap-4">
         <div className="grid gap-2 sm:grid-cols-2">
@@ -381,7 +514,8 @@ function SubmitPage() {
           <label className="grid gap-1"><span className="text-sm text-gray-600">Узел</span><select name="subsystem" value={form.subsystem} onChange={onChange} className="px-3 py-2 rounded-xl border" required><option value="" disabled>Выберите…</option>{['interior','body','electrical','suspension','engine','transmission'].map((s)=> <option key={s} value={s}>{s}</option>)}</select></label>
           <label className="grid gap-1"><span className="text-sm text-gray-600">Лицензия</span><select name="license" value={form.license} onChange={onChange} className="px-3 py-2 rounded-xl border"><option>CC BY</option><option>CC BY-NC</option><option>CC0</option><option>MIT</option></select></label>
         </div>
-        <label className="grid gap-1"><span className="text-sm text-gray-600">Описание</span><textarea name="description" value={form.description} onChange={onChange} className="px-3 py-2 rounded-xl border min-h-[120px]" /></label>
+        <label className="grid gap-1"><span className="text-sm text-gray-600">Описание</span><textarea name="description" value={form.description} onChange={onChange} className="px-3 py-2 rounded-xl border min-h-[120px]" />
+        </label>
         <div className="grid gap-2 sm:grid-cols-2">
           <label className="grid gap-1"><span className="text-sm text-gray-600">Ссылка на модель для предпросмотра (GLB/GLTF)</span><input name="src" value={form.src} onChange={onChange} className="px-3 py-2 rounded-xl border" placeholder="Google Drive/Dropbox/Supabase" required /></label>
           <label className="grid gap-1"><span className="text-sm text-gray-600">Ссылка для скачивания</span><input name="download" value={form.download} onChange={onChange} className="px-3 py-2 rounded-xl border" placeholder="Можно оставить пустым — возьмём из src" /></label>
