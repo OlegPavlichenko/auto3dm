@@ -2,26 +2,33 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
-
 /**
  * Auto3D — Free‑tier Starter (React/Next compatible)
  * --------------------------------------------------
- * 404 FIX: internal navigation now uses `/?view=...` (single route),
- * so clicking «Добавить модель» не уходит на /submit (которого нет на сервере).
- * В AppRouter добавлен разбор search‑параметра `view` и мягкий редирект
- * с путей /submit, /rules, /dmca на соответствующие `/?view=...`.
+ * New: Сразу из /?view=submit можно:
+ *  - Добавить модель в каталог **локально** (сохраняется в localStorage; видно в этом браузере).
+ *  - Опубликовать в каталог через **Supabase** (если заданы env NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY).
  *
- * Crash FIX: <model-viewer> обёрнут callback‑ref + ErrorBoundary, все null/SSR
- * обращения защищены. Состояние загрузки надёжно фиксируется таймаутом.
- *
- * Страницы: каталог, /?view=submit, /?view=rules, /?view=dmca.
- * Тест‑кейсы сохранены и расширены.
+ * Безопасность/устойчивость:
+ *  - По‑прежнему один маршрут с параметром `?view=...` (никаких next/navigation).
+ *  - <model-viewer> закрыт от null/SSR ошибок; при сбоях показывается постер.
+ *  - Тест‑кейсы сохранены и расширены ранее.
  */
 
 // ====== CONFIG ======
-const FORM_EMBED_URL = ""; // Google Form embed URL, or empty to use local mailto form
-const MAILTO_TO = ""; // Incoming submissions email (for local fallback mailto)
-const CONTACT_EMAIL = MAILTO_TO || "contact@example.com"; // used in Rules/DMCA
+// e.g. https://your-project.supabase.co
+// Задаются в Vercel → Settings → Environment Variables (client, NEXT_PUBLIC_*)
+// На локалке — в .env.local
+// declare process for TS (in case it complains in this single file)
+// @ts-ignore
+declare const process: any;
+const SUPABASE_URL: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_SUPABASE_URL) || "";
+const SUPABASE_ANON_KEY: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_SUPABASE_ANON_KEY) || "";
+const HAS_SUPABASE = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+
+const FORM_EMBED_URL = ""; // Google Form embed URL (опционально)
+const MAILTO_TO = ""; // если пусто — локальная кнопка mailto не появится
+const CONTACT_EMAIL = MAILTO_TO || "contact@example.com"; // для Rules/DMCA
 
 // Allow using the web component in TSX without a separate .d.ts file
 declare global {
@@ -37,7 +44,6 @@ function useModelViewerReady() {
   const [ready, setReady] = useState(false);
   useEffect(() => {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
-
     const id = 'model-viewer-script';
     if (!document.getElementById(id)) {
       const s = document.createElement('script');
@@ -47,7 +53,6 @@ function useModelViewerReady() {
       s.addEventListener('error', () => console.error('Failed to load model-viewer script'));
       document.head.appendChild(s);
     }
-
     let tries = 0;
     const tm = setInterval(() => {
       tries += 1;
@@ -55,15 +60,12 @@ function useModelViewerReady() {
         if ((window as any)?.customElements?.get?.('model-viewer')) {
           setReady(true);
           clearInterval(tm);
-        } else if (tries > 200) { // ~10s
+        } else if (tries > 200) {
           clearInterval(tm);
           console.warn('model-viewer did not register in time; showing posters only.');
         }
-      } catch {
-        // ignore and keep polling
-      }
+      } catch {}
     }, 50);
-
     return () => clearInterval(tm);
   }, []);
   return ready;
@@ -109,94 +111,108 @@ function getExt(url: string): string {
   }
 }
 
-// --- Types ---
+// ===== Data Layer =====
 export type Item = {
   id: string;
   brand: string;
   model: string;
   title: string;
   subsystem: string;
-  src: string;
-  download: string;
+  src: string; // Prefer GLB/GLTF URL
+  download: string; // direct file URL
   image?: string;
 };
 
-// --- Error Boundary ---
-class ViewerBoundary extends React.Component<{ poster?: string; alt?: string; children: React.ReactNode }, { hasError: boolean }> {
-  constructor(props: any) {
-    super(props);
-    this.state = { hasError: false };
-  }
-  static getDerivedStateFromError(_: any) { return { hasError: true }; }
-  componentDidCatch(err: any) { console.error('ViewerBoundary caught:', err); }
-  render() {
-    if (this.state.hasError) {
-      return <img src={this.props.poster || POSTER_SVG} alt={(this.props.alt || 'viewer') + ' (постер)'} className="absolute inset-0 w-full h-full object-contain" />;
-    }
-    return <>{this.props.children}</>;
-  }
+// Local (browser) storage — preview only
+const LS_KEY = 'auto3d-items-v1';
+function readLocalItems(): Item[] {
+  if (typeof window === 'undefined') return [];
+  try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch { return []; }
+}
+function writeLocalItems(items: Item[]) {
+  if (typeof window === 'undefined') return;
+  try { localStorage.setItem(LS_KEY, JSON.stringify(items)); } catch {}
+}
+function addLocalItem(item: Item) {
+  const items = [item, ...readLocalItems()];
+  writeLocalItems(items);
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('local-items-updated'));
 }
 
-// --- Safe wrapper for <model-viewer> using a callback ref ---
-function SafeModelViewer({ src, alt, poster }: { src: string; alt: string; poster?: string }) {
+// Remote (Supabase) — optional publish for everyone
+async function fetchRemoteItems(): Promise<Item[]> {
+  if (!HAS_SUPABASE) return [];
+  const url = `${SUPABASE_URL}/rest/v1/items?select=*`;
+  const res = await fetch(url, { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } });
+  if (!res.ok) { console.warn('Supabase fetch failed', await res.text()); return []; }
+  const rows = await res.json();
+  // expect rows shaped like Item
+  return (rows || []).map((r: any) => ({ id: String(r.id), brand: r.brand, model: r.model, title: r.title, subsystem: r.subsystem, src: r.src, download: r.download, image: r.image || undefined }));
+}
+
+async function insertRemoteItem(item: Item): Promise<boolean> {
+  if (!HAS_SUPABASE) return false;
+  const url = `${SUPABASE_URL}/rest/v1/items`;
+  const payload = { ...item };
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      Prefer: 'return=representation',
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) { console.warn('Supabase insert failed', await res.text()); return false; }
+  try { await res.json(); } catch {}
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('remote-items-updated'));
+  return true;
+}
+
+// ===== <model-viewer> Safe wrapper =====
+function useModelViewerStatus(src: string, supported: boolean) {
   const mvReady = useModelViewerReady();
   const [node, setNode] = useState<HTMLElement | null>(null);
   const [status, setStatus] = useState<'idle' | 'loading' | 'ok' | 'error' | 'unsupported' | 'notready' | 'timeout'>('notready');
-  const [loadToken, setLoadToken] = useState(0);
+  const [token, setToken] = useState(0);
 
-  const normalizedSrc = toDirectLink(src);
-  const ext = getExt(normalizedSrc);
-
-  // Unsupported formats → poster only
   useEffect(() => {
-    if (!ext) return; // unknown
-    const ok = ext === 'glb' || ext === 'gltf';
-    if (!ok) setStatus('unsupported');
-  }, [ext]);
-
-  // Start/track loading when component is registered & src changes
-  useEffect(() => {
-    if (!mvReady || getExt(normalizedSrc) === '' || status === 'unsupported') return;
+    if (!supported) { setStatus('unsupported'); return; }
+    if (!mvReady) { setStatus('notready'); return; }
+    if (!src) { setStatus('error'); return; }
     setStatus('loading');
-    setLoadToken((t) => t + 1);
-  }, [normalizedSrc, mvReady]);
+    setToken((t) => t + 1);
+  }, [src, mvReady, supported]);
 
-  // Attach events only when we have a real DOM node
   useEffect(() => {
-    if (!mvReady || status === 'unsupported' || !node) return;
-
+    if (!mvReady || !node || status === 'unsupported') return;
     let cancelled = false;
     const onLoad = () => { if (!cancelled) setStatus('ok'); };
     const onError = (ev: any) => { if (!cancelled) { console.error('<model-viewer> error:', ev?.detail || ev); setStatus('error'); } };
-
     try {
       node.addEventListener('load', onLoad as EventListener);
       node.addEventListener('error', onError as EventListener);
-    } catch (e) {
-      console.warn('listener attach failed', e);
-    }
-
-    // timeout guard (15s)
+    } catch (e) { console.warn('listener attach failed', e); }
     const timeout = setTimeout(() => { if (!cancelled && status === 'loading') setStatus('timeout'); }, 15000);
+    return () => { cancelled = true; clearTimeout(timeout); try { node.removeEventListener('load', onLoad as EventListener); node.removeEventListener('error', onError as EventListener); } catch {} };
+  }, [mvReady, node, token, status]);
 
-    return () => {
-      cancelled = true;
-      clearTimeout(timeout);
-      try {
-        node.removeEventListener('load', onLoad as EventListener);
-        node.removeEventListener('error', onError as EventListener);
-      } catch {}
-    };
-  }, [mvReady, node, loadToken, status]);
+  return { mvReady, status, setNode } as const;
+}
 
+function SafeModelViewer({ src, alt, poster }: { src: string; alt: string; poster?: string }) {
+  const normalizedSrc = toDirectLink(src);
+  const ext = getExt(normalizedSrc);
+  const supported = ext === 'glb' || ext === 'gltf';
+  const { mvReady, status, setNode } = useModelViewerStatus(normalizedSrc, supported);
   const showPosterOnly = status === 'error' || status === 'unsupported' || status === 'notready' || status === 'timeout';
-
   return (
     <div className="relative w-full h-full">
       {showPosterOnly && (
         <img src={poster || POSTER_SVG} alt={`${alt} (постер)`} className="absolute inset-0 w-full h-full object-contain" />
       )}
-      {mvReady && (
+      {mvReady && supported && (
         // @ts-ignore - web component
         <model-viewer
           key={normalizedSrc}
@@ -216,15 +232,14 @@ function SafeModelViewer({ src, alt, poster }: { src: string; alt: string; poste
   );
 }
 
-// --- Demo catalog ---
-export type CatalogItem = Item;
+// ===== Demo catalog (static) =====
 const initialItems: Item[] = [
   { id: 'kia-carnival-cupholder', brand: 'Kia', model: 'Carnival', title: 'Cupholder insert (demo)', subsystem: 'interior', src: DEMO_SRC_OK, download: SAMPLE_DUCK },
   { id: 'toyota-bb-hook', brand: 'Toyota', model: 'bB', title: 'Cargo hook (demo)', subsystem: 'interior', src: DEMO_SRC_OK, download: SAMPLE_DUCK },
   { id: 'vw-golf3-vent', brand: 'Volkswagen', model: 'Golf 3', title: 'Vent clip mount (demo)', subsystem: 'interior', src: DEMO_SRC_OK, download: SAMPLE_DUCK },
 ];
 
-// --- Tests (existing + extra) ---
+// ===== Tests (unchanged + extra) =====
 const TEST_ITEMS: Item[] = [
   { id: 'test-ok-duck', brand: 'TEST', model: 'Embedded', title: 'TEST: Embedded textures (Duck.glb)', subsystem: 'test', src: SAMPLE_DUCK, download: SAMPLE_DUCK },
   { id: 'test-ok-helmet', brand: 'TEST', model: 'Embedded', title: 'TEST: Embedded textures (DamagedHelmet.glb)', subsystem: 'test', src: SAMPLE_HELMET, download: SAMPLE_HELMET },
@@ -239,10 +254,32 @@ const TEST_ITEMS: Item[] = [
   { id: 'test-empty-src', brand: 'TEST', model: 'Edge', title: 'TEST: Empty src (poster only)', subsystem: 'test', src: '', download: '#' },
 ];
 
+// ===== Minimal client router (no next/navigation) =====
+function useView() {
+  const [view, setView] = useState<string>('');
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const sync = () => {
+      const url = new URL(window.location.href);
+      const pathname = url.pathname.toLowerCase();
+      if (pathname === '/submit' || pathname === '/sumbit') { url.pathname = '/'; url.searchParams.set('view','submit'); window.history.replaceState({}, '', url.toString()); }
+      if (pathname === '/rules') { url.pathname = '/'; url.searchParams.set('view','rules'); window.history.replaceState({}, '', url.toString()); }
+      if (pathname === '/dmca') { url.pathname = '/'; url.searchParams.set('view','dmca'); window.history.replaceState({}, '', url.toString()); }
+      setView((url.searchParams.get('view') || '').toLowerCase());
+    };
+    sync();
+    const onPop = () => sync();
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  return view;
+}
+
 // ===== Pages =====
 function SubmitPage() {
   const [form, setForm] = useState({ author: '', email: '', brand: '', model: '', title: '', subsystem: '', description: '', src: '', download: '', license: 'CC BY' });
   const [agree, setAgree] = useState(false);
+  const [status, setStatus] = useState<string>("");
   const subsystems = ['interior', 'body', 'electrical', 'suspension', 'engine', 'transmission'];
 
   const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
@@ -251,11 +288,36 @@ function SubmitPage() {
     setForm((s) => ({ ...s, [name]: value }));
   };
 
-  const onSubmitLocal = (e: React.FormEvent) => {
-    e.preventDefault();
+  const makeItem = (): Item => ({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    brand: form.brand.trim(),
+    model: form.model.trim(),
+    title: form.title.trim(),
+    subsystem: form.subsystem,
+    src: toDirectLink(form.src.trim()),
+    download: toDirectLink(form.download.trim() || form.src.trim()),
+  });
+
+  const addLocal = () => {
     if (!agree) return;
+    const item = makeItem();
+    addLocalItem(item);
+    setStatus('Модель добавлена в каталог локально (видно только вам на этом устройстве).');
+  };
+
+  const publishRemote = async () => {
+    if (!agree) return;
+    if (!HAS_SUPABASE) { setStatus('Supabase не настроен. Добавьте переменные окружения и таблицу items.'); return; }
+    setStatus('Публикация…');
+    const ok = await insertRemoteItem(makeItem());
+    setStatus(ok ? 'Опубликовано в общем каталоге (Supabase).' : 'Не удалось опубликовать в Supabase. Проверьте ключи и политику RLS.');
+  };
+
+  const mailtoSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!MAILTO_TO) return;
     const normalizedSrc = toDirectLink(form.src);
-    const normalizedDownload = toDirectLink(form.download);
+    const normalizedDownload = toDirectLink(form.download || form.src);
     const subject = `Auto3D submission: ${form.brand} ${form.model} — ${form.title}`.trim();
     const body = [
       `Author: ${form.author}`,
@@ -272,8 +334,8 @@ function SubmitPage() {
       'Description:',
       form.description,
     ].join('%0D%0A');
-    const mailto = `mailto:${encodeURIComponent(MAILTO_TO)}?subject=${encodeURIComponent(subject)}&body=${body}`;
-    if (typeof window !== 'undefined') window.location.href = mailto;
+    const href = `mailto:${encodeURIComponent(MAILTO_TO)}?subject=${encodeURIComponent(subject)}&body=${body}`;
+    if (typeof window !== 'undefined') window.location.href = href;
   };
 
   return (
@@ -281,43 +343,41 @@ function SubmitPage() {
       <h1 className="text-2xl font-bold mb-2">Добавить модель</h1>
       <p className="text-gray-600 mb-6">Перед отправкой ознакомьтесь с <Link className="underline" href="/?view=rules">Правилами публикации</Link> и <Link className="underline" href="/?view=dmca">DMCA/удаление</Link>.</p>
 
-      {FORM_EMBED_URL ? (
-        <div className="bg-white border rounded-2xl p-4">
-          <label className="flex items-start gap-2 text-sm mb-4">
-            <input type="checkbox" checked={agree} onChange={(e) => setAgree(!!e?.target?.checked)} />
-            <span>Я ознакомился и согласен с <Link className="underline" href="/?view=rules">Правилами</Link> и <Link className="underline" href="/?view=dmca">DMCA/удалением</Link>.</span>
-          </label>
-          <div className={agree ? "rounded-2xl overflow-hidden border" : "rounded-2xl overflow-hidden border opacity-60 pointer-events-none select-none"}>
-            <iframe src={FORM_EMBED_URL} width="100%" height="1200" style={{ border: 0 }} loading="lazy" referrerPolicy="no-referrer-when-downgrade" title="Auto3D Submit Form" />
-          </div>
-          {!agree && <div className="text-xs text-gray-600 mt-3">Поставьте галочку, чтобы активировать форму.</div>}
+      <form onSubmit={MAILTO_TO ? mailtoSubmit : (e)=>e.preventDefault()} className="bg-white border rounded-2xl p-6 grid gap-4">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="grid gap-1"><span className="text-sm text-gray-600">Автор</span><input name="author" value={form.author} onChange={onChange} className="px-3 py-2 rounded-xl border" required /></label>
+          <label className="grid gap-1"><span className="text-sm text-gray-600">Email</span><input type="email" name="email" value={form.email} onChange={onChange} className="px-3 py-2 rounded-xl border" required /></label>
         </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="grid gap-1"><span className="text-sm text-gray-600">Марка</span><input name="brand" value={form.brand} onChange={onChange} className="px-3 py-2 rounded-xl border" required /></label>
+          <label className="grid gap-1"><span className="text-sm text-gray-600">Модель</span><input name="model" value={form.model} onChange={onChange} className="px-3 py-2 rounded-xl border" required /></label>
+        </div>
+        <label className="grid gap-1"><span className="text-sm text-gray-600">Название модели</span><input name="title" value={form.title} onChange={onChange} className="px-3 py-2 rounded-xl border" required /></label>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="grid gap-1"><span className="text-sm text-gray-600">Узел</span><select name="subsystem" value={form.subsystem} onChange={onChange} className="px-3 py-2 rounded-xl border" required><option value="" disabled>Выберите…</option>{['interior','body','electrical','suspension','engine','transmission'].map((s)=> <option key={s} value={s}>{s}</option>)}</select></label>
+          <label className="grid gap-1"><span className="text-sm text-gray-600">Лицензия</span><select name="license" value={form.license} onChange={onChange} className="px-3 py-2 rounded-xl border"><option>CC BY</option><option>CC BY-NC</option><option>CC0</option><option>MIT</option></select></label>
+        </div>
+        <label className="grid gap-1"><span className="text-sm text-gray-600">Описание</span><textarea name="description" value={form.description} onChange={onChange} className="px-3 py-2 rounded-xl border min-h-[120px]" /></label>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="grid gap-1"><span className="text-sm text-gray-600">Ссылка на модель для предпросмотра (GLB/GLTF)</span><input name="src" value={form.src} onChange={onChange} className="px-3 py-2 rounded-xl border" placeholder="Google Drive/Dropbox/Supabase" required /></label>
+          <label className="grid gap-1"><span className="text-sm text-gray-600">Ссылка для скачивания</span><input name="download" value={form.download} onChange={onChange} className="px-3 py-2 rounded-xl border" placeholder="Можно оставить пустым — возьмём из src" /></label>
+        </div>
+
+        <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={agree} onChange={(e)=>setAgree(!!e?.target?.checked)} required /> <span>Я согласен с <Link className="underline" href="/?view=rules">Правилами</Link> и <Link className="underline" href="/?view=dmca">DMCA/удалением</Link>.</span></label>
+
+        <div className="flex flex-wrap items-center gap-3 pt-2">
+          <button type="button" onClick={addLocal} disabled={!agree} className={agree?"px-4 py-2 rounded-xl border bg-white hover:bg-gray-100":"px-4 py-2 rounded-xl border bg-gray-200 text-gray-500 cursor-not-allowed"}>Добавить в каталог (локально)</button>
+          <button type="button" onClick={publishRemote} disabled={!agree} className={agree?"px-4 py-2 rounded-xl bg-black text-white":"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed"}>{HAS_SUPABASE?"Опубликовать (Supabase)":"Опубликовать (Supabase не настроен)"}</button>
+          {MAILTO_TO && <button type="submit" className="px-4 py-2 rounded-xl border">Отправить на почту</button>}
+          <span className="text-xs text-gray-500">Совет: используйте .glb с вшитыми текстурами; для Google Drive ссылка общего доступа конвертируется автоматически.</span>
+        </div>
+        {status && <div className="text-sm text-gray-700 bg-gray-50 border rounded-xl p-3">{status}</div>}
+      </form>
+
+      {HAS_SUPABASE ? (
+        <div className="mt-4 text-xs text-gray-500">Supabase подключён. Таблица: <code>items</code> (поля: id text primary key, brand text, model text, title text, subsystem text, src text, download text, image text NULL). Не забудьте включить RLS и политику INSERT/SELECT для anon.</div>
       ) : (
-        <form onSubmit={onSubmitLocal} className="bg-white border rounded-2xl p-6 grid gap-4">
-          <div className="grid gap-2 md:grid-cols-2">
-            <label className="grid gap-1"><span className="text-sm text-gray-600">Автор</span><input name="author" value={form.author} onChange={onChange} className="px-3 py-2 rounded-xl border" required /></label>
-            <label className="grid gap-1"><span className="text-sm text-gray-600">Email</span><input type="email" name="email" value={form.email} onChange={onChange} className="px-3 py-2 rounded-xl border" required /></label>
-          </div>
-          <div className="grid gap-2 md:grid-cols-2">
-            <label className="grid gap-1"><span className="text-sm text-gray-600">Марка</span><input name="brand" value={form.brand} onChange={onChange} className="px-3 py-2 rounded-xl border" required /></label>
-            <label className="grid gap-1"><span className="text-sm text-gray-600">Модель</span><input name="model" value={form.model} onChange={onChange} className="px-3 py-2 rounded-xl border" required /></label>
-          </div>
-          <label className="grid gap-1"><span className="text-sm text-gray-600">Название модели</span><input name="title" value={form.title} onChange={onChange} className="px-3 py-2 rounded-xl border" required /></label>
-          <div className="grid gap-2 md:grid-cols-2">
-            <label className="grid gap-1"><span className="text-sm text-gray-600">Узел</span><select name="subsystem" value={form.subsystem} onChange={onChange} className="px-3 py-2 rounded-xl border" required><option value="" disabled>Выберите…</option>{subsystems.map((s)=> <option key={s} value={s}>{s}</option>)}</select></label>
-            <label className="grid gap-1"><span className="text-sm text-gray-600">Лицензия</span><select name="license" value={form.license} onChange={onChange} className="px-3 py-2 rounded-xl border"><option>CC BY</option><option>CC BY-NC</option><option>CC0</option><option>MIT</option></select></label>
-          </div>
-          <label className="grid gap-1"><span className="text-sm text-gray-600">Описание</span><textarea name="description" value={form.description} onChange={onChange} className="px-3 py-2 rounded-xl border min-h-[120px]" /></label>
-          <div className="grid gap-2 md:grid-cols-2">
-            <label className="grid gap-1"><span className="text-sm text-gray-600">Ссылка на модель для предпросмотра (GLB/GLTF)</span><input name="src" value={form.src} onChange={onChange} className="px-3 py-2 rounded-xl border" placeholder="Google Drive/Dropbox/Supabase" required /></label>
-            <label className="grid gap-1"><span className="text-sm text-gray-600">Ссылка для скачивания</span><input name="download" value={form.download} onChange={onChange} className="px-3 py-2 rounded-xl border" placeholder="Google Drive/Dropbox/Supabase" required /></label>
-          </div>
-          <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={agree} onChange={(e)=>setAgree(!!e?.target?.checked)} required /> <span>Я ознакомился и согласен с <Link className="underline" href="/?view=rules">Правилами</Link> и <Link className="underline" href="/?view=dmca">DMCA/удалением</Link>.</span></label>
-          <div className="flex items-center justify-between gap-3 pt-2">
-            <div className="text-xs text-gray-500">Без сервера мы отправим письмо через <code>mailto:</code>. Укажите <b>MAILTO_TO</b> в коде, чтобы поставить адрес модератора.</div>
-            <button disabled={!agree} className={agree?"px-4 py-2 rounded-xl bg-black text-white":"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed"}>Отправить</button>
-          </div>
-        </form>
+        <div className="mt-4 text-xs text-gray-500">Чтобы публикации были видны всем, подключите Supabase (см. переменные окружения <code>NEXT_PUBLIC_SUPABASE_URL</code> и <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> на Vercel).</div>
       )}
     </div>
   );
@@ -332,7 +392,7 @@ function RulesPage() {
         <section>
           <h2 className="font-semibold">1. Что можно публиковать</h2>
           <ul className="list-disc ml-5">
-            <li>3D‑модели авто‑компонентов для печати/ЧПУ/проектов: крепления, адаптеры, органайзеры, декоративные элементы.</li>
+            <li>3D‑модели авто‑компонентов для печати/ЧПУ: крепления, адаптеры, органайзеры, декоративные элементы.</li>
             <li>Модели должны принадлежать вам (вы — автор) или быть размещены по лицензии, позволяющей распространение.</li>
           </ul>
         </section>
@@ -340,24 +400,24 @@ function RulesPage() {
           <h2 className="font-semibold">2. Что нельзя</h2>
           <ul className="list-disc ml-5">
             <li>Нарушение прав третьих лиц (бренды, логотипы, коммерческие CAD, платные модели без разрешения).</li>
-            <li>Опасные детали безопасности (элементы тормозной системы и т.п.) без явного предупреждения и дисклеймера.</li>
+            <li>Опасные детали безопасности без дисклеймера.</li>
             <li>Незаконный/вредоносный контент.</li>
           </ul>
         </section>
         <section>
           <h2 className="font-semibold">3. Файлы и предпросмотр</h2>
           <ul className="list-disc ml-5">
-            <li>Предпочтительно <b>.glb</b> (glTF‑Binary) с вшитыми текстурами. При использовании .gltf — проверьте пути к текстурам и CORS.</li>
-            <li>Даём ссылки, доступные без авторизации. Для Google Drive — «Поделиться для всех со ссылкой».</li>
+            <li>Предпочтительно <b>.glb</b> (glTF‑Binary) с вшитыми текстурами. При .gltf — проверьте пути к текстурам и CORS.</li>
+            <li>Ссылки должны быть доступны без авторизации. Для Google Drive — общий доступ по ссылке.</li>
           </ul>
         </section>
         <section>
           <h2 className="font-semibold">4. Лицензии</h2>
-          <p>Рекомендуем: CC BY, CC BY‑NC, CC0, MIT. Указывайте автора и лицензию в описании.</p>
+          <p>Рекомендуем: CC BY, CC BY‑NC, CC0, MIT. Указывайте автора и лицензию.</p>
         </section>
         <section>
           <h2 className="font-semibold">5. Модерация</h2>
-          <p>Мы можем скрыть/удалить материалы, нарушающие правила. Для жалоб и запросов пишите на <a className="underline" href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>.</p>
+          <p>Жалобы и запросы на <a className="underline" href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>.</p>
         </section>
       </div>
     </div>
@@ -375,14 +435,10 @@ function DmcaPage() {
           <ol className="list-decimal ml-5">
             <li>Ссылка(и) на материал(ы), которые нужно удалить.</li>
             <li>Данные правообладателя и контакт для связи.</li>
-            <li>Подтверждение, что вы — правообладатель или уполномоченное лицо.</li>
-            <li>Краткое описание нарушения и желаемые действия.</li>
+            <li>Подтверждение прав.</li>
+            <li>Описание нарушения и желаемые действия.</li>
           </ol>
-          <p className="mt-2">Направляйте на <a className="underline" href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>. Мы постараемся оперативно ответить.</p>
-        </section>
-        <section>
-          <h2 className="font-semibold">Контр‑уведомление</h2>
-          <p>Если материал удалён по ошибке, вы можете направить обоснованное обращение на тот же адрес для пересмотра.</p>
+          <p className="mt-2">Пишите на <a className="underline" href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>.</p>
         </section>
       </div>
     </div>
@@ -397,22 +453,31 @@ function CatalogApp() {
   const [subsystem, setSubsystem] = useState('');
   const [showTests, setShowTests] = useState(false);
 
-  // Init showTests from URL and listen to nav toggle events
+  const [localItems, setLocalItems] = useState<Item[]>([]);
+  const [remoteItems, setRemoteItems] = useState<Item[]>([]);
+
+  // Init toggles & load data
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const syncFromUrl = () => {
-      try {
-        const url = new URL(window.location.href);
-        setShowTests(url.searchParams.get('tests') === '1');
-      } catch {}
+      try { const url = new URL(window.location.href); setShowTests(url.searchParams.get('tests') === '1'); } catch {}
     };
     syncFromUrl();
-    const handler = (e: any) => setShowTests(!!e?.detail?.checked);
-    window.addEventListener('tests-toggle', handler as any);
-    return () => window.removeEventListener('tests-toggle', handler as any);
+    setLocalItems(readLocalItems());
+    const onLocal = () => setLocalItems(readLocalItems());
+    window.addEventListener('local-items-updated', onLocal);
+    window.addEventListener('storage', onLocal);
+    (async () => { try { const rows = await fetchRemoteItems(); setRemoteItems(rows); } catch (e) { console.warn(e); } })();
+    const onRemote = async () => { try { const rows = await fetchRemoteItems(); setRemoteItems(rows); } catch {} };
+    window.addEventListener('remote-items-updated', onRemote);
+    return () => { window.removeEventListener('local-items-updated', onLocal); window.removeEventListener('storage', onLocal); window.removeEventListener('remote-items-updated', onRemote); };
   }, []);
 
-  const catalog = useMemo(() => (showTests ? [...initialItems, ...TEST_ITEMS] : initialItems), [showTests]);
+  const catalog = useMemo(() => {
+    const base = [...remoteItems, ...initialItems];
+    const withTests = showTests ? [...base, ...TEST_ITEMS] : base;
+    return [...localItems, ...withTests];
+  }, [remoteItems, localItems, showTests]);
 
   const brands = useMemo(() => Array.from(new Set(catalog.map((i) => i.brand))).sort(), [catalog]);
   const models = useMemo(() => Array.from(new Set(catalog.filter((i) => !brand || i.brand === brand).map((i) => i.model))).sort(), [brand, catalog]);
@@ -431,7 +496,20 @@ function CatalogApp() {
 
   return (
     <main className="max-w-6xl mx-auto px-4 py-6">
-      <p className="text-gray-600 mb-4">Замените ссылки <code>src</code>/<code>download</code> на ваши файлы (Google Drive/Dropbox/Supabase). Лучше использовать <strong>GLB</strong>. Для Google Drive вставляйте обычную ссылку — мы попробуем превратить её в прямую. Для OBJ/STL система подскажет конвертацию вместо падения.</p>
+      <p className="text-gray-600 mb-4">Добавляйте модели: локально (только вы видите) или через Supabase (видят все). Для предпросмотра лучше <strong>GLB</strong> с вшитыми текстурами. Google Drive/Dropbox ссылки будут нормализованы.</p>
+      <div className="flex flex-wrap gap-2 items-center mb-4">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Поиск: Kia, Golf 3, cupholder..." className="px-3 py-2 rounded-xl border w-64 focus:outline-none focus:ring" />
+        <select value={brand} onChange={(e) => { setBrand(e.target.value); setModel(''); }} className="px-3 py-2 rounded-xl border"><option value="">Марка</option>{brands.map((b)=>(<option key={b} value={b}>{b}</option>))}</select>
+        <select value={model} onChange={(e) => setModel(e.target.value)} className="px-3 py-2 rounded-xl border"><option value="">Модель</option>{models.map((m)=>(<option key={m} value={m}>{m}</option>))}</select>
+        <select value={subsystem} onChange={(e) => setSubsystem(e.target.value)} className="px-3 py-2 rounded-xl border"><option value="">Узел</option>{subsystems.map((s)=>(<option key={s} value={s}>{s}</option>))}</select>
+        <button onClick={() => { setQ(''); setBrand(''); setModel(''); setSubsystem(''); }} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-100">Сброс</button>
+        <label className="ml-2 inline-flex items-center gap-2 text-xs text-gray-600">
+          <input type="checkbox" onChange={(e)=>{ try { const checked = !!e.target && (e.target as HTMLInputElement).checked; if (typeof window==='undefined') return; const url = new URL(window.location.href); if (checked) url.searchParams.set('tests','1'); else url.searchParams.delete('tests'); window.history.replaceState({}, '', url.toString()); window.dispatchEvent(new CustomEvent('tests-toggle', { detail: { checked } })); } catch{} }} />
+          Показать тест‑карточки
+        </label>
+        <Link href="/?view=submit" className="ml-auto px-3 py-2 rounded-xl bg-black text-white text-sm">Добавить модель</Link>
+      </div>
+
       {items.length === 0 ? (
         <div className="p-6 rounded-2xl bg-white border shadow-sm">Ничего не найдено. Попробуйте изменить фильтры.</div>
       ) : (
@@ -457,7 +535,7 @@ function CatalogApp() {
   );
 }
 
-// ===== App Shell with single-route nav (/?view=...) =====
+// ===== App Shell & Router =====
 function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-gray-50">
@@ -469,26 +547,6 @@ function AppShell({ children }: { children: React.ReactNode }) {
             <Link href="/?view=submit" className="px-3 py-2 rounded-xl bg-black text-white hover:opacity-90">Добавить модель</Link>
             <Link href="/?view=rules" className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-100">Правила</Link>
             <Link href="/?view=dmca" className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-100">DMCA/Удаление</Link>
-            <label className="ml-2 inline-flex items-center gap-2 text-xs text-gray-600">
-              <input
-                type="checkbox"
-                onChange={(e) => {
-                  try {
-                    const checked = !!e?.target && (e.target as HTMLInputElement).checked;
-                    if (typeof window === 'undefined') return;
-                    const url = new URL(window.location.href);
-                    if (checked) url.searchParams.set('tests', '1'); else url.searchParams.delete('tests');
-                    window.history.replaceState({}, '', url.toString());
-                    if (typeof (window as any).CustomEvent === 'function') {
-                      window.dispatchEvent(new CustomEvent('tests-toggle', { detail: { checked } }));
-                    }
-                  } catch (err) {
-                    console.warn('tests toggle failed', err);
-                  }
-                }}
-              />
-              Показать тест‑карточки (для каталога)
-            </label>
           </nav>
         </div>
       </header>
@@ -509,28 +567,6 @@ function AppShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-// Lightweight view param router without next/navigation
-function useView() {
-  const [view, setView] = useState<string>('');
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const sync = () => {
-      const url = new URL(window.location.href);
-      const pathname = url.pathname.toLowerCase();
-      // Soft redirects from path routes to single route with view param
-      if (pathname === '/submit' || pathname === '/sumbit') { url.pathname = '/'; url.searchParams.set('view','submit'); window.history.replaceState({}, '', url.toString()); }
-      if (pathname === '/rules') { url.pathname = '/'; url.searchParams.set('view','rules'); window.history.replaceState({}, '', url.toString()); }
-      if (pathname === '/dmca') { url.pathname = '/'; url.searchParams.set('view','dmca'); window.history.replaceState({}, '', url.toString()); }
-      setView((url.searchParams.get('view') || '').toLowerCase());
-    };
-    sync();
-    const onPop = () => sync();
-    window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
-  }, []);
-  return view;
-}
-
 export default function AppRouter() {
   const view = useView();
   let page: React.ReactNode = <CatalogApp />;
@@ -539,5 +575,3 @@ export default function AppRouter() {
   else if (view === 'dmca') page = <DmcaPage />;
   return <AppShell>{page}</AppShell>;
 }
-
-
