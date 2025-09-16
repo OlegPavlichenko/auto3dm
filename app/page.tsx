@@ -51,29 +51,56 @@ function useModelViewerReady() {
   const [ready, setReady] = useState(false);
   useEffect(() => {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
-    const id = 'model-viewer-script';
-    if (!document.getElementById(id)) {
-      const s = document.createElement('script');
-      s.id = id;
-      s.type = 'module';
-      s.src = 'https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js';
-      s.addEventListener('error', () => console.error('Failed to load model-viewer script'));
-      document.head.appendChild(s);
-    }
-    let tries = 0;
-    const tm = setInterval(() => {
-      tries += 1;
+
+    const setIfReady = () => {
       try {
         if ((window as any)?.customElements?.get?.('model-viewer')) {
           setReady(true);
-          clearInterval(tm);
-        } else if (tries > 200) {
-          clearInterval(tm);
-          console.warn('model-viewer did not register in time; showing posters only.');
+          return true;
         }
       } catch {}
-    }, 50);
-    return () => clearInterval(tm);
+      return false;
+    };
+
+    (async () => {
+      // 1) Try dynamic ESM import (bundled, без CDN/CSP проблем)
+      if (!setIfReady()) {
+        try {
+          await import('@google/model-viewer');
+          if (setIfReady()) return;
+        } catch (e) {
+          console.warn('model-viewer dynamic import failed, falling back to CDN', e);
+        }
+      }
+
+      // 2) Fallback CDN #1 (jsDelivr)
+      const id = 'model-viewer-script';
+      const ensureCdn = (src: string, onError?: () => void) => {
+        if (document.getElementById(id)) return;
+        const s = document.createElement('script');
+        s.id = id; s.type = 'module'; s.src = src;
+        s.onerror = () => { console.error('Failed to load model-viewer from', src); onError?.(); };
+        document.head.appendChild(s);
+      };
+      if (!setIfReady()) {
+        ensureCdn('https://cdn.jsdelivr.net/npm/@google/model-viewer/dist/model-viewer.min.js', () => {
+          // 3) Fallback CDN #2 (unpkg)
+          ensureCdn('https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js');
+        });
+      }
+
+      // Poll registration up to ~15s
+      let tries = 0;
+      const tm = setInterval(() => {
+        tries += 1;
+        if (setIfReady()) {
+          clearInterval(tm);
+        } else if (tries > 300) {
+          clearInterval(tm);
+          console.warn('model-viewer did not register (CDN blocked?). Showing poster only.');
+        }
+      }, 50);
+    })();
   }, []);
   return ready;
 }
@@ -690,7 +717,7 @@ function CatalogApp() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
           {items.map((i) => (
             <article key={i.id} className="bg-white rounded-2xl border shadow-sm overflow-hidden hover:shadow-md transition">
-              <div className="aspect-video bg-gray-100 flex items-center justify-center relative">
+              <div className="bg-gray-100 flex items-center justify-center relative" style={{ aspectRatio: '16 / 9' }}>
                 <SafeModelViewer src={i.src} alt={i.title} poster={POSTER_SVG} />
               </div>
               <div className="p-4">
