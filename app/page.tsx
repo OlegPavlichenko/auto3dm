@@ -1,6 +1,7 @@
 'use client';
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import Script from "next/script";
 
 /**
  * Auto3D — Free‑tier Starter (React/Next compatible)
@@ -52,55 +53,32 @@ function useModelViewerReady() {
   useEffect(() => {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
 
-    const setIfReady = () => {
-      try {
-        if ((window as any)?.customElements?.get?.('model-viewer')) {
-          setReady(true);
-          return true;
-        }
-      } catch {}
-      return false;
+    const isReady = () => {
+      try { return !!(window as any)?.customElements?.get?.('model-viewer'); } catch { return false; }
     };
 
-    (async () => {
-      // 1) Try dynamic ESM import (bundled, без CDN/CSP проблем)
-      if (!setIfReady()) {
-        try {
-          await import('@google/model-viewer');
-          if (setIfReady()) return;
-        } catch (e) {
-          console.warn('model-viewer dynamic import failed, falling back to CDN', e);
-        }
-      }
+    if (isReady()) { setReady(true); return; }
 
-      // 2) Fallback CDN #1 (jsDelivr)
-      const id = 'model-viewer-script';
-      const ensureCdn = (src: string, onError?: () => void) => {
-        if (document.getElementById(id)) return;
-        const s = document.createElement('script');
-        s.id = id; s.type = 'module'; s.src = src;
-        s.onerror = () => { console.error('Failed to load model-viewer from', src); onError?.(); };
-        document.head.appendChild(s);
-      };
-      if (!setIfReady()) {
-        ensureCdn('https://cdn.jsdelivr.net/npm/@google/model-viewer/dist/model-viewer.min.js', () => {
-          // 3) Fallback CDN #2 (unpkg)
-          ensureCdn('https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js');
-        });
-      }
+    // Fallback: inject CDN script if not present (jsDelivr → unpkg)
+    const ensureCdn = (id: string, src: string, onError?: () => void) => {
+      if (document.getElementById(id)) return;
+      const s = document.createElement('script');
+      s.id = id; s.type = 'module'; s.src = src;
+      s.onerror = () => { console.error('Failed to load model-viewer from', src); onError?.(); };
+      document.head.appendChild(s);
+    };
+    // If Next <Script id="model-viewer-script"> didn't run yet, add one
+    ensureCdn('model-viewer-script', 'https://cdn.jsdelivr.net/npm/@google/model-viewer/dist/model-viewer.min.js', () => {
+      ensureCdn('model-viewer-script-2', 'https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js');
+    });
 
-      // Poll registration up to ~15s
-      let tries = 0;
-      const tm = setInterval(() => {
-        tries += 1;
-        if (setIfReady()) {
-          clearInterval(tm);
-        } else if (tries > 300) {
-          clearInterval(tm);
-          console.warn('model-viewer did not register (CDN blocked?). Showing poster only.');
-        }
-      }, 50);
-    })();
+    let tries = 0;
+    const tm = setInterval(() => {
+      tries += 1;
+      if (isReady()) { setReady(true); clearInterval(tm); }
+      else if (tries > 300) { clearInterval(tm); console.warn('model-viewer did not register (CDN blocked?). Showing poster only.'); }
+    }, 50);
+    return () => clearInterval(tm);
   }, []);
   return ready;
 }
@@ -740,6 +718,9 @@ function CatalogApp() {
 function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* Load model-viewer early via Next Script; our hook will also fallback if CDN blocked */}
+      <Script id="model-viewer-script" src="https://cdn.jsdelivr.net/npm/@google/model-viewer/dist/model-viewer.min.js" type="module" strategy="beforeInteractive" />
+
       <header className="sticky top-0 z-10 backdrop-blur bg-white/70 border-b">
         <div className="max-w-6xl mx-auto px-4 py-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <h1 className="text-2xl font-bold tracking-tight">Auto3D <span className="text-gray-500 text-base">free‑tier demo</span></h1>
