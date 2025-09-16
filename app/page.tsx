@@ -1,7 +1,7 @@
 'use client';
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+
 
 /**
  * Auto3D — Free‑tier Starter (React/Next compatible)
@@ -369,7 +369,7 @@ function DmcaPage() {
     <div className="max-w-3xl mx-auto px-4 py-8">
       <h1 className="text-2xl font-bold mb-2">DMCA / Удаление по запросу</h1>
       <p className="text-gray-600 mb-4">Если вы считаете, что материал нарушает ваши права, отправьте запрос на удаление.</p>
-      <div className="bg-white border rounded-2xl p-6 space-y-4 text см leading-6">
+      <div className="bg-white border rounded-2xl p-6 space-y-4 text-sm leading-6">
         <section>
           <h2 className="font-semibold">Как отправить запрос</h2>
           <ol className="list-decimal ml-5">
@@ -435,7 +435,7 @@ function CatalogApp() {
       {items.length === 0 ? (
         <div className="p-6 rounded-2xl bg-white border shadow-sm">Ничего не найдено. Попробуйте изменить фильтры.</div>
       ) : (
-        <div className="grid grid-cols-1 см:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
           {items.map((i) => (
             <article key={i.id} className="bg-white rounded-2xl border shadow-sm overflow-hidden hover:shadow-md transition">
               <div className="aspect-video bg-gray-100 flex items-center justify-center relative">
@@ -509,7 +509,38 @@ function AppShell({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Lightweight view param router without next/navigation
+function useView() {
+  const [view, setView] = useState<string>('');
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const sync = () => {
+      const url = new URL(window.location.href);
+      const pathname = url.pathname.toLowerCase();
+      // Soft redirects from path routes to single route with view param
+      if (pathname === '/submit' || pathname === '/sumbit') { url.pathname = '/'; url.searchParams.set('view','submit'); window.history.replaceState({}, '', url.toString()); }
+      if (pathname === '/rules') { url.pathname = '/'; url.searchParams.set('view','rules'); window.history.replaceState({}, '', url.toString()); }
+      if (pathname === '/dmca') { url.pathname = '/'; url.searchParams.set('view','dmca'); window.history.replaceState({}, '', url.toString()); }
+      setView((url.searchParams.get('view') || '').toLowerCase());
+    };
+    sync();
+    const onPop = () => sync();
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  return view;
+}
+
 export default function AppRouter() {
+  const view = useView();
+  let page: React.ReactNode = <CatalogApp />;
+  if (view === 'submit') page = <SubmitPage />;
+  else if (view === 'rules') page = <RulesPage />;
+  else if (view === 'dmca') page = <DmcaPage />;
+  return <AppShell>{page}</AppShell>;
+}
+
+function AppRouterInner() {
   const pathname = usePathname();
   const router = useRouter();
   const search = useSearchParams();
