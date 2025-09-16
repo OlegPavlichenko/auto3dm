@@ -540,25 +540,4 @@ export default function AppRouter() {
   return <AppShell>{page}</AppShell>;
 }
 
-function AppRouterInner() {
-  const pathname = usePathname();
-  const router = useRouter();
-  const search = useSearchParams();
-  const view = (search?.get('view') || '').toLowerCase();
 
-  // Soft redirect from path routes to single route with view param
-  useEffect(() => {
-    if (!router) return;
-    if (pathname === '/submit') router.replace('/?view=submit');
-    if (pathname === '/rules') router.replace('/?view=rules');
-    if (pathname === '/dmca') router.replace('/?view=dmca');
-    if (pathname === '/sumbit') router.replace('/?view=submit');
-  }, [pathname, router]);
-
-  let page: React.ReactNode = <CatalogApp />;
-  if (view === 'submit') page = <SubmitPage />;
-  else if (view === 'rules') page = <RulesPage />;
-  else if (view === 'dmca') page = <DmcaPage />;
-
-  return <AppShell>{page}</AppShell>;
-}
