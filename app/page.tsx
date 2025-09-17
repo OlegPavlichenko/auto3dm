@@ -1,3 +1,11 @@
+
+// import Script from "next/script";
+<Script
+  id="model-viewer-script"
+  src="https://cdn.jsdelivr.net/npm/@google/model-viewer/dist/model-viewer.min.js"
+  type="module"
+  strategy="beforeInteractive"
+/>
 'use client';
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
