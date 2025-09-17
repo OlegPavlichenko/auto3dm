@@ -26,6 +26,7 @@ declare const process: any;
 const SUPABASE_URL: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_SUPABASE_URL) || "";
 const SUPABASE_ANON_KEY: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_SUPABASE_ANON_KEY) || "";
 const HAS_SUPABASE = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+const SUPABASE_BUCKET = 'models'; // публичный бакет для файлов (создай в Supabase → Storage)
 
 // Meshy API (AI retexturing: uploads STL/OBJ/FBX/GLTF/GLB and returns textured GLB)
 // Docs: https://docs.meshy.ai/en/api/retexture
@@ -156,9 +157,9 @@ async function fetchRemoteItems(): Promise<Item[]> {
   if (!HAS_SUPABASE) return [];
   const url = `${SUPABASE_URL}/rest/v1/items?select=*`;
   const res = await fetch(url, { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } });
-  if (!res.ok) { console.warn('Supabase fetch failed', await res.text()); return []; }
+  if (!res.ok) { console.warn('Supabase fetch failed', await res.text()); return [];
+  }
   const rows = await res.json();
-  // expect rows shaped like Item
   return (rows || []).map((r: any) => ({ id: String(r.id), brand: r.brand, model: r.model, title: r.title, subsystem: r.subsystem, src: r.src, download: r.download, image: r.image || undefined }));
 }
 
@@ -180,6 +181,70 @@ async function insertRemoteItem(item: Item): Promise<boolean> {
   try { await res.json(); } catch {}
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('remote-items-updated'));
   return true;
+}
+
+// Upload raw file bytes to Supabase Storage (public bucket)
+// Returns a public URL or null on failure
+async function uploadToSupabaseStorage(file: File, pathInBucket?: string): Promise<string | null> {
+  if (!HAS_SUPABASE) return null;
+  const safeName = (pathInBucket || `${Date.now()}-${(file.name || 'model.glb').replace(/[^a-z0-9_.-]/gi, '_')}`).replace(/^\/+/, '');
+  const uploadUrl = `${SUPABASE_URL}/storage/v1/object/${encodeURIComponent(SUPABASE_BUCKET + '/' + safeName)}`;
+  const res = await fetch(uploadUrl, {
+    method: 'POST',
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': (file as any).type || 'application/octet-stream',
+      'x-upsert': 'true',
+    },
+    body: file,
+  });
+  if (!res.ok) {
+    console.warn('Supabase storage upload failed', res.status, await res.text());
+    return null;
+  }
+  return `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${safeName}`;
+}
+
+// ===== IndexedDB (local browser file store) =====
+const IDB_DB = 'auto3d-idb';
+const IDB_STORE = 'files';
+function openIDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    try {
+      const req = indexedDB.open(IDB_DB, 1);
+      req.onupgradeneeded = () => { const db = req.result; if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE); };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    } catch (e) { reject(e); }
+  });
+}
+async function idbPut(key: string, blob: Blob): Promise<void> {
+  const db = await openIDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.objectStore(IDB_STORE).put(blob, key);
+  });
+  db.close();
+}
+async function idbGet(key: string): Promise<Blob | null> {
+  const db = await openIDB();
+  const blob: Blob | null = await new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readonly');
+    tx.onerror = () => reject(tx.error);
+    const req = tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess = () => resolve((req.result as Blob) || null);
+    req.onerror = () => reject(req.error);
+  });
+  db.close();
+  return blob;
+}
+function isIdbSrc(u: string): boolean { return typeof u === 'string' && u.startsWith('idb://'); }
+function idbKeyFromSrc(u: string): string { return u.replace(/^idb:\/\//, ''); }
+
+return true;
 }
 
 // ===== <model-viewer> Safe wrapper =====
@@ -214,22 +279,48 @@ function useModelViewerStatus(src: string, supported: boolean) {
 }
 
 function SafeModelViewer({ src, alt, poster }: { src: string; alt: string; poster?: string }) {
-  const normalizedSrc = toDirectLink(src);
-  const ext = getExt(normalizedSrc);
-  const supported = ext === 'glb' || ext === 'gltf';
-  const { mvReady, status, setNode } = useModelViewerStatus(normalizedSrc, supported);
-  const showPosterOnly = status === 'error' || status === 'unsupported' || status === 'notready' || status === 'timeout';
+  const [resolved, setResolved] = useState<string>('');
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        if (blobUrl) { URL.revokeObjectURL(blobUrl); setBlobUrl(null); }
+        if (isIdbSrc(src)) {
+          const key = idbKeyFromSrc(src);
+          const blob = await idbGet(key);
+          if (!alive) return;
+          if (!blob) { setResolved(''); return; }
+          const url = URL.createObjectURL(blob);
+          setBlobUrl(url);
+          setResolved(url);
+        } else {
+          setResolved(toDirectLink(src));
+        }
+      } catch (e) { console.warn('resolve src failed', e); setResolved(toDirectLink(src)); }
+    })();
+    return () => { alive = false; };
+  }, [src]);
+
+  const ext = getExt(resolved);
+  const supported = !!resolved && (ext === 'glb' || ext === 'gltf' || resolved.startsWith('blob:') || resolved.startsWith('data:'));
+  const { mvReady, status, setNode } = useModelViewerStatus(resolved, supported);
+  const showPosterOnly = !resolved || status === 'error' || status === 'unsupported' || status === 'notready' || status === 'timeout';
+
+  useEffect(() => () => { if (blobUrl) URL.revokeObjectURL(blobUrl); }, [blobUrl]);
+
   return (
     <div className="relative w-full h-full">
       {showPosterOnly && (
         <img src={poster || POSTER_SVG} alt={`${alt} (постер)`} className="absolute inset-0 w-full h-full object-contain" />
       )}
-      {mvReady && supported && (
+      {mvReady && supported && resolved && (
         // @ts-ignore - web component
         <model-viewer
-          key={normalizedSrc}
+          key={resolved}
           ref={(el: any) => setNode(el as unknown as HTMLElement)}
-          src={normalizedSrc}
+          src={resolved}
           alt={alt}
           camera-controls
           auto-rotate
@@ -319,16 +410,20 @@ function SubmitPage() {
   const [status, setStatus] = useState<string>("");
   const subsystems = ['interior', 'body', 'electrical', 'suspension', 'engine', 'transmission'];
 
-  // Meshy section state
+  // A) Meshy section state
   const [meshFile, setMeshFile] = useState<File | null>(null);
   const [styleText, setStyleText] = useState<string>('black rubber with subtle hex pattern, slightly worn');
   const [styleImageUrl, setStyleImageUrl] = useState<string>('');
-  const [useOriginalUV, setUseOriginalUV] = useState<boolean>(false); // STL обычно без UV → лучше генерировать новые
+  const [useOriginalUV, setUseOriginalUV] = useState<boolean>(false);
   const [enablePBR, setEnablePBR] = useState<boolean>(true);
   const [autoPublishRemote, setAutoPublishRemote] = useState<boolean>(false);
   const [meshyTaskId, setMeshyTaskId] = useState<string>('');
   const [meshyProgress, setMeshyProgress] = useState<number>(0);
   const [meshyPhase, setMeshyPhase] = useState<'idle'|'upload'|'queue'|'run'|'succeeded'|'failed'>('idle');
+
+  // B) Local GLB — IndexedDB storage
+  const [localGlbFile, setLocalGlbFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState<boolean>(false);
 
   const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e?.target ?? ({} as any);
@@ -401,26 +496,19 @@ function SubmitPage() {
       fr.readAsDataURL(file);
     });
   }
-
   async function meshyCreateRetextureTask(modelDataURI: string, textPrompt: string, imageUrl: string, enableOriginalUV: boolean, enablePbr: boolean): Promise<string> {
     const payload: any = { model_url: modelDataURI, enable_original_uv: enableOriginalUV, enable_pbr: enablePbr };
     if (imageUrl) payload.image_style_url = imageUrl; else payload.text_style_prompt = textPrompt || 'generic automotive plastic';
-    const res = await fetch('https://api.meshy.ai/openapi/v1/retexture', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${MESHY_API_KEY}` },
-      body: JSON.stringify(payload),
-    });
+    const res = await fetch('https://api.meshy.ai/openapi/v1/retexture', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${MESHY_API_KEY}` }, body: JSON.stringify(payload) });
     if (!res.ok) throw new Error(`Meshy create failed: ${res.status}`);
     const data = await res.json();
     return data.result as string; // task id
   }
-
   async function meshyGetTask(taskId: string): Promise<any> {
     const res = await fetch(`https://api.meshy.ai/openapi/v1/retexture/${taskId}`, { headers: { Authorization: `Bearer ${MESHY_API_KEY}` } });
     if (!res.ok) throw new Error(`Meshy status failed: ${res.status}`);
     return res.json();
   }
-
   async function startMeshyPipeline() {
     if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
     if (!meshFile) { setStatus('Выберите файл STL/OBJ/FBX/GLTF/GLB.'); return; }
@@ -431,10 +519,8 @@ function SubmitPage() {
       const taskId = await meshyCreateRetextureTask(dataURI, styleText, styleImageUrl, useOriginalUV, enablePBR);
       setMeshyTaskId(taskId);
       setMeshyPhase('run'); setStatus('Задача создана. Ожидаем результат…');
-
-      // Polling loop
       let done = false;
-      for (let i = 0; i < 300; i++) { // ~25 минут при 5с шаге
+      for (let i = 0; i < 300; i++) {
         const t = await meshyGetTask(taskId);
         const st = String(t.status || '').toUpperCase();
         const pr = Number(t.progress || 0);
@@ -443,14 +529,10 @@ function SubmitPage() {
           done = true;
           setMeshyPhase('succeeded');
           const glbUrl: string | undefined = t?.model_urls?.glb;
-          const thumb: string | undefined = t?.thumbnail_url;
           if (!glbUrl) throw new Error('Meshy вернул задачу без ссылки на GLB.');
-
           const item = makeItem(glbUrl);
           addLocalItem(item);
-
           if (autoPublishRemote && HAS_SUPABASE) { try { await insertRemoteItem(item); } catch (e) { console.warn(e); } }
-
           setForm((s) => ({ ...s, src: glbUrl, download: glbUrl, title: s.title || 'Textured via Meshy' }));
           setStatus('Готово! GLB получен и добавлен в каталог.');
           break;
@@ -466,11 +548,47 @@ function SubmitPage() {
     }
   }
 
+  // === Local GLB → IndexedDB ===
+  const addLocalFromFile = async () => {
+    if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
+    if (!localGlbFile) { setStatus('Выберите GLB файл.'); return; }
+    try {
+      const item = makeItem();
+      const id = item.id;
+      await idbPut(id, localGlbFile);
+      const localSrc = `idb://${id}`;
+      addLocalItem({ ...item, src: localSrc, download: localSrc });
+      setForm((s) => ({ ...s, src: localSrc, download: localSrc, title: s.title || localGlbFile.name }));
+      setStatus('Файл сохранён локально (IndexedDB) и добавлен в каталог. Видно только на этом устройстве.');
+    } catch (e: any) {
+      console.error(e);
+      setStatus('Не удалось сохранить локально: ' + (e?.message || e));
+    }
+  };
+
+  // === Upload GLB to Supabase Storage ===
+  const uploadLocalToSupabase = async () => {
+    if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
+    if (!HAS_SUPABASE) { setStatus('Supabase не настроен. Добавьте NEXT_PUBLIC_SUPABASE_URL/ANON_KEY.'); return; }
+    if (!localGlbFile) { setStatus('Выберите GLB файл.'); return; }
+    try {
+      setUploading(true); setStatus('Загрузка файла в Supabase Storage…');
+      const url = await uploadToSupabaseStorage(localGlbFile);
+      setUploading(false);
+      if (!url) { setStatus('Не удалось загрузить в Supabase Storage. Проверьте политику доступа для бакета.'); return; }
+      const item = makeItem(url);
+      addLocalItem(item);
+      setForm((s)=>({ ...s, src: url, download: url, title: s.title || localGlbFile.name }));
+      setStatus('Файл загружен в Storage и добавлен в каталог.');
+    } catch (e: any) { setUploading(false); setStatus('Ошибка загрузки: ' + (e?.message || e)); }
+  };
+
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
       <h1 className="text-2xl font-bold mb-2">Добавить модель</h1>
       <p className="text-gray-600 mb-6">Перед отправкой ознакомьтесь с <Link className="underline" href="/?view=rules">Правилами публикации</Link> и <Link className="underline" href="/?view=dmca">DMCA/удаление</Link>.</p>
 
+      {/* A. Автотекстуринг (Meshy) */}
       <div className="bg-white border rounded-2xl p-6 grid gap-4 mb-8">
         <div className="flex items-center gap-2">
           <h2 className="text-lg font-semibold">Автотекстуринг (Meshy) — STL → GLB с текстурами</h2>
@@ -505,6 +623,36 @@ function SubmitPage() {
         )}
       </div>
 
+      {/* B. Локальный GLB без хостинга */}
+      <div className="bg-white border rounded-2xl p-6 grid gap-4 mb-8">
+        <h2 className="text-lg font-semibold">Быстро: добавить локальный GLB (без загрузки в интернет)</h2>
+        <label className="grid gap-1">
+          <span className="text-sm text-gray-600">GLB файл</span>
+          <input type="file" accept=".glb" onChange={(e)=>setLocalGlbFile(e.target.files?.[0]||null)} className="px-3 py-2 rounded-xl border" />
+        </label>
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={addLocalFromFile} disabled={!localGlbFile || !agree} className={(!localGlbFile || !agree)?"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed":"px-4 py-2 rounded-xl border"}>Добавить в каталог (локально)</button>
+          <span className="text-xs text-gray-500">Хранится в браузере (IndexedDB), будет видно после перезагрузки, но только на этом устройстве.</span>
+        </div>
+      </div>
+
+      {/* C. Бесплатный хостинг через Supabase Storage */}
+      {HAS_SUPABASE && (
+        <div className="bg-white border rounded-2xl p-6 grid gap-4 mb-8">
+          <h2 className="text-lg font-semibold">Бесплатный хостинг: Supabase Storage</h2>
+          <p className="text-sm text-gray-600">Создайте публичный бакет <code>{SUPABASE_BUCKET}</code> и разрешите INSERT для роли <code>anon</code> (для прототипа). Загрузите GLB и получите публичную ссылку.</p>
+          <label className="grid gap-1">
+            <span className="text-sm text-gray-600">GLB файл</span>
+            <input type="file" accept=".glb" onChange={(e)=>setLocalGlbFile(e.target.files?.[0]||null)} className="px-3 py-2 rounded-xl border" />
+          </label>
+          <div className="flex items-center gap-3">
+            <button type="button" onClick={uploadLocalToSupabase} disabled={!localGlbFile || !agree || uploading} className={(!localGlbFile || !agree || uploading)?"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed":"px-4 py-2 rounded-xl bg-black text-white"}>{uploading? 'Загружаем…' : 'Загрузить в Storage и добавить'}</button>
+            <span className="text-xs text-gray-500">Публичная ссылка с корректным CORS → работает в предпросмотре у всех.</span>
+          </div>
+        </div>
+      )}
+
+      {/* D. Ручное заполнение карточки */}
       <form onSubmit={MAILTO_TO ? mailtoSubmit : (e)=>e.preventDefault()} className="bg-white border rounded-2xl p-6 grid gap-4">
         <div className="grid gap-2 sm:grid-cols-2">
           <label className="grid gap-1"><span className="text-sm text-gray-600">Автор</span><input name="author" value={form.author} onChange={onChange} className="px-3 py-2 rounded-xl border" required /></label>
@@ -516,13 +664,7 @@ function SubmitPage() {
         </div>
         <label className="grid gap-1"><span className="text-sm text-gray-600">Название модели</span><input name="title" value={form.title} onChange={onChange} className="px-3 py-2 rounded-xl border" required /></label>
         <div className="grid gap-2 sm:grid-cols-2">
-          <label className="grid gap-1"><span className="text-sm text-gray-600">Узел</span><select name="subsystem" value={form.subsystem} onChange={onChange} className="px-3 py-2 rounded-xl border" required><option value="" disabled>Выберите…</option>{['interior','body','electrical','suspension','engine','transmission'].map((s)=> <option key={s} value={s}>{s}</option>)}</select></label>
-          <label className="grid gap-1"><span className="text-sm text-gray-600">Лицензия</span><select name="license" value={form.license} onChange={onChange} className="px-3 py-2 rounded-xl border"><option>CC BY</option><option>CC BY-NC</option><option>CC0</option><option>MIT</option></select></label>
-        </div>
-        <label className="grid gap-1"><span className="text-sm text-gray-600">Описание</span><textarea name="description" value={form.description} onChange={onChange} className="px-3 py-2 rounded-xl border min-h-[120px]" />
-        </label>
-        <div className="grid gap-2 sm:grid-cols-2">
-          <label className="grid gap-1"><span className="text-sm text-gray-600">Ссылка на модель для предпросмотра (GLB/GLTF)</span><input name="src" value={form.src} onChange={onChange} className="px-3 py-2 rounded-xl border" placeholder="Google Drive/Dropbox/Supabase" required /></label>
+          <label className="grid gap-1"><span className="text-sm text-gray-600">Ссылка на модель для предпросмотра (GLB/GLTF)</span><input name="src" value={form.src} onChange={onChange} className="px-3 py-2 rounded-xl border" placeholder="idb://… или Supabase URL или /models/duck.glb" required /></label>
           <label className="grid gap-1"><span className="text-sm text-gray-600">Ссылка для скачивания</span><input name="download" value={form.download} onChange={onChange} className="px-3 py-2 rounded-xl border" placeholder="Можно оставить пустым — возьмём из src" /></label>
         </div>
 
@@ -532,15 +674,15 @@ function SubmitPage() {
           <button type="button" onClick={addLocal} disabled={!agree} className={agree?"px-4 py-2 rounded-xl border bg-white hover:bg-gray-100":"px-4 py-2 rounded-xl border bg-gray-200 text-gray-500 cursor-not-allowed"}>Добавить в каталог (локально)</button>
           <button type="button" onClick={publishRemote} disabled={!agree} className={agree?"px-4 py-2 rounded-xl bg-black text-white":"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed"}>{HAS_SUPABASE?"Опубликовать (Supabase)":"Опубликовать (Supabase не настроен)"}</button>
           {MAILTO_TO && <button type="submit" className="px-4 py-2 rounded-xl border">Отправить на почту</button>}
-          <span className="text-xs text-gray-500">Совет: используйте .glb с вшитыми текстурами; для Google Drive ссылка общего доступа конвертируется автоматически.</span>
+          <span className="text-xs text-gray-500">Подсказка: можно использовать <code>idb://…</code> (локально), Supabase URL или <code>/models/…</code> из папки public.</span>
         </div>
         {status && <div className="text-sm text-gray-700 bg-gray-50 border rounded-xl p-3">{status}</div>}
       </form>
 
       {HAS_SUPABASE ? (
-        <div className="mt-4 text-xs text-gray-500">Supabase подключён. Таблица: <code>items</code> (поля: id text primary key, brand text, model text, title text, subsystem text, src text, download text, image text NULL). Не забудьте включить RLS и политику INSERT/SELECT для anon.</div>
+        <div className="mt-4 text-xs text-gray-500">Supabase подключён. Таблица: <code>items</code>; Storage: публичный бакет <code>{SUPABASE_BUCKET}</code> с политикой INSERT/SELECT для роли <code>anon</code> (для прототипа).</div>
       ) : (
-        <div className="mt-4 text-xs text-gray-500">Чтобы публикации были видны всем, подключите Supabase (см. переменные окружения <code>NEXT_PUBLIC_SUPABASE_URL</code> и <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> на Vercel).</div>
+        <div className="mt-4 text-xs text-gray-500">Чтобы публикации были видны всем, подключите Supabase (переменные <code>NEXT_PUBLIC_SUPABASE_URL</code>, <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>). Для бесплатного хостинга файлов можно использовать Storage (публичный бакет).</div>
       )}
     </div>
   );
