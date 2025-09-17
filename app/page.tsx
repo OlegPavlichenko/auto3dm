@@ -1,11 +1,3 @@
-
-// import Script from "next/script";
-<Script
-  id="model-viewer-script"
-  src="https://cdn.jsdelivr.net/npm/@google/model-viewer/dist/model-viewer.min.js"
-  type="module"
-  strategy="beforeInteractive"
-/>
 'use client';
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -40,7 +32,7 @@ const SUPABASE_BUCKET = 'models'; // публичный бакет для фай
 // Docs: https://docs.meshy.ai/en/api/retexture
 // In dev можно использовать тестовый ключ из доков Meshy (возвращает демонстрационные результаты):
 // 'msy_dummy_api_key_for_test_mode_12345678'
-const MESHY_API_KEY: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_MESHY_API_KEY) || 'msy_Dvx6ml0yY2f3WVLgrBrdiySKP6XcEd915jzq';
+const MESHY_API_KEY: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_MESHY_API_KEY) || 'msy_dummy_api_key_for_test_mode_12345678';
 const HAS_MESHY = !!MESHY_API_KEY;
 
 const FORM_EMBED_URL = ""; // Google Form embed URL (опционально)
@@ -251,9 +243,6 @@ async function idbGet(key: string): Promise<Blob | null> {
 }
 function isIdbSrc(u: string): boolean { return typeof u === 'string' && u.startsWith('idb://'); }
 function idbKeyFromSrc(u: string): string { return u.replace(/^idb:\/\//, ''); }
-
-return true;
-}
 
 // ===== <model-viewer> Safe wrapper =====
 function useModelViewerStatus(src: string, supported: boolean) {
