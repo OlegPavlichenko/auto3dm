@@ -23,9 +23,30 @@ import Script from "next/script";
 // declare process for TS (in case it complains in this single file)
 // @ts-ignore
 declare const process: any;
-const SUPABASE_URL: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_SUPABASE_URL) || "";
-const SUPABASE_ANON_KEY: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_SUPABASE_ANON_KEY) || "";
+// --- Supabase env ---
+const SUPABASE_URL: string = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
+const SUPABASE_ANON_KEY: string = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
 const HAS_SUPABASE = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+;(() => {
+  if (typeof window !== "undefined") {
+    try {
+      const host = SUPABASE_URL ? new URL(SUPABASE_URL).host : "(empty)";
+      console.log("[Auto3D] Supabase env", {
+        HAS_SUPABASE,
+        URL_HOST: host,
+        URL_LEN: SUPABASE_URL.length,
+        KEY_LEN: SUPABASE_ANON_KEY.length,
+      });
+    } catch {
+      console.log("[Auto3D] Supabase env", {
+        HAS_SUPABASE,
+        URL_LEN: SUPABASE_URL.length,
+        KEY_LEN: SUPABASE_ANON_KEY.length,
+      });
+    }
+  }
+})();
+
 const SUPABASE_BUCKET = 'models'; // публичный бакет для файлов (создай в Supabase → Storage)
 
 // Meshy API (AI retexturing: uploads STL/OBJ/FBX/GLTF/GLB and returns textured GLB)
@@ -49,40 +70,7 @@ declare global {
 }
 
 // --- Hook: inject <model-viewer> & report readiness ---
-function useModelViewerReady() {
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof document === 'undefined') return;
 
-    const isReady = () => {
-      try { return !!(window as any)?.customElements?.get?.('model-viewer'); } catch { return false; }
-    };
-
-    if (isReady()) { setReady(true); return; }
-
-    // Fallback: inject CDN script if not present (jsDelivr → unpkg)
-    const ensureCdn = (id: string, src: string, onError?: () => void) => {
-      if (document.getElementById(id)) return;
-      const s = document.createElement('script');
-      s.id = id; s.type = 'module'; s.src = src;
-      s.onerror = () => { console.error('Failed to load model-viewer from', src); onError?.(); };
-      document.head.appendChild(s);
-    };
-    // If Next <Script id="model-viewer-script"> didn't run yet, add one
-    ensureCdn('model-viewer-script', 'https://cdn.jsdelivr.net/npm/@google/model-viewer/dist/model-viewer.min.js', () => {
-      ensureCdn('model-viewer-script-2', 'https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js');
-    });
-
-    let tries = 0;
-    const tm = setInterval(() => {
-      tries += 1;
-      if (isReady()) { setReady(true); clearInterval(tm); }
-      else if (tries > 300) { clearInterval(tm); console.warn('model-viewer did not register (CDN blocked?). Showing poster only.'); }
-    }, 50);
-    return () => clearInterval(tm);
-  }, []);
-  return ready;
-}
 
 // --- Demo GLBs (textures embedded; CORS‑safe) ---
 const SAMPLE_DUCK =
@@ -888,9 +876,11 @@ function AppShell({ children }: { children: React.ReactNode }) {
 
 export default function AppRouter() {
   const view = useView();
+
   let page: React.ReactNode = <CatalogApp />;
   if (view === 'submit') page = <SubmitPage />;
-  else if (view === 'rules') page = <RulesPage />;
-  else if (view === 'dmca') page = <DmcaPage />;
+  if (view === 'dmca') page = <DmcaPage />;
+  if (view === 'rules') page = <RulesPage />;
+
   return <AppShell>{page}</AppShell>;
 }
