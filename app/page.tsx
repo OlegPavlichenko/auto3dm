@@ -432,7 +432,7 @@ function SubmitPage() {
   const [styleImageUrl, setStyleImageUrl] = useState<string>('');
   const [useOriginalUV, setUseOriginalUV] = useState<boolean>(false);
   const [enablePBR, setEnablePBR] = useState<boolean>(true);
-  const [autoPublishRemote, setAutoPublishRemote] = useState<boolean>(false);
+  const [autoPublishRemote, setAutoPublishRemote] = useState<boolean>(HAS_SUPABASE);
   const [meshyTaskId, setMeshyTaskId] = useState<string>('');
   const [meshyProgress, setMeshyProgress] = useState<number>(0);
   const [meshyPhase, setMeshyPhase] = useState<'idle'|'upload'|'queue'|'run'|'succeeded'|'failed'>('idle');
@@ -486,7 +486,7 @@ function SubmitPage() {
       `Title: ${form.title}`,
       `Subsystem: ${form.subsystem}`,
       `License: ${form.license}`,
-      `Agreed to rules: yes`,
+      `Agreed to rules: yes`;
       `Viewer src: ${normalizedSrc}`,
       `Download: ${normalizedDownload}`,
       '',
@@ -583,92 +583,46 @@ function SubmitPage() {
   };
 
   // === Upload GLB to Supabase Storage ===
-const uploadLocalToSupabase = async () => {
-  // Local helpers (scoped)
-  const slug = (v: string): string => {
+  const uploadLocalToSupabase = async () => {
+    // Local helpers (scoped)
+    const slug = (v: string): string => {
+      try {
+        return (v || '')
+          .toString()
+          .normalize('NFKD')
+          .replace(/[̀-ͯ]/g, '')
+          .replace(/[^a-zA-Z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .toLowerCase();
+      } catch { return 'x'; }
+    };
+    const safeFileName = (name: string): string => (name || 'model.glb').replace(/[^a-zA-Z0-9_.-]/g, '_');
+
+    if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
+    if (!HAS_SUPABASE) { setStatus('Supabase не настроен. Добавьте NEXT_PUBLIC_SUPABASE_URL/ANON_KEY.'); return; }
+    if (!localGlbFile) { setStatus('Выберите GLB файл.'); return; }
+
+    const MAX_MB = 75;
+    const sizeMb = localGlbFile.size / (1024 * 1024);
+    if (sizeMb > MAX_MB) { setStatus(`Файл слишком большой: ${sizeMb.toFixed(1)} MB (лимит ${MAX_MB} MB). Сожмите: npx gltfpack -i in.glb -o out.glb -cc`); return; }
+    if (!/\.glb$/i.test(localGlbFile.name)) { setStatus('Разрешены только .glb файлы для этого загрузчика.'); return; }
+
     try {
-      return (v || '')
-        .toString()
-        .normalize('NFKD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[^a-zA-Z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '')
-        .toLowerCase();
-    } catch { return 'x'; }
+      setUploading(true);
+      setStatus('Загрузка файла в Supabase Storage…');
+      const relPath = `${slug(form.brand||'brand')}/${slug(form.model||'model')}/${Date.now()}-${safeFileName(localGlbFile.name)}`;
+      const url = await uploadToSupabaseStorage(localGlbFile, relPath);
+      setUploading(false);
+      if (!url) { setStatus('Не удалось загрузить в Supabase Storage. Проверьте политику доступа для бакета.'); return; }
+      const item = makeItem(url);
+      addLocalItem(item);
+      setForm((s)=>({ ...s, src: url, download: url, title: s.title || localGlbFile.name }));
+      setStatus('Файл загружен в Storage и добавлен в каталог.');
+    } catch (e: any) {
+      setUploading(false);
+      setStatus('Ошибка загрузки: ' + (e?.message || e));
+    }
   };
-  const safeFileName = (name: string): string => (name || 'model.glb').replace(/[^a-zA-Z0-9_.-]/g, '_');
-
-  if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
-  if (!HAS_SUPABASE) { setStatus('Supabase не настроен. Добавьте NEXT_PUBLIC_SUPABASE_URL/ANON_KEY.'); return; }
-  if (!localGlbFile) { setStatus('Выберите GLB файл.'); return; }
-
-  const MAX_MB = 75;
-  const sizeMb = localGlbFile.size / (1024 * 1024);
-  if (sizeMb > MAX_MB) { setStatus(`Файл слишком большой: ${sizeMb.toFixed(1)} MB (лимит ${MAX_MB} MB). Сожмите: npx gltfpack -i in.glb -o out.glb -cc`); return; }
-  if (!/\.glb$/i.test(localGlbFile.name)) { setStatus('Разрешены только .glb файлы для этого загрузчика.'); return; }
-
-  try {
-    setUploading(true);
-    setStatus('Загрузка файла в Supabase Storage…');
-    const relPath = `${slug(form.brand||'brand')}/${slug(form.model||'model')}/${Date.now()}-${safeFileName(localGlbFile.name)}`;
-    const url = await uploadToSupabaseStorage(localGlbFile, relPath);
-    setUploading(false);
-    if (!url) { setStatus('Не удалось загрузить в Supabase Storage. Проверьте политику доступа для бакета.'); return; }
-    const item = makeItem(url);
-    addLocalItem(item);
-    setForm((s)=>({ ...s, src: url, download: url, title: s.title || localGlbFile.name }));
-    setStatus('Файл загружен в Storage и добавлен в каталог.');
-  } catch (e: any) {
-    setUploading(false);
-    setStatus('Ошибка загрузки: ' + (e?.message || e));
-  }
-};
-
-return (v || '')
-        .toString()
-        .normalize('NFKD')
-        .replace(/[̀-ͯ]/g, '')
-        .replace(/[^a-zA-Z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '')
-        .toLowerCase();
-    } catch { return 'x'; }
-  };
-  const safeFileName = (name: string): string => (name || 'model.glb').replace(/[^a-zA-Z0-9_.-]/g, '_');
-
-  if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
-  if (!HAS_SUPABASE) { setStatus('Supabase не настроен. Добавьте NEXT_PUBLIC_SUPABASE_URL/ANON_KEY.'); return; }
-  if (!localGlbFile) { setStatus('Выберите GLB файл.'); return; }
-
-  const MAX_MB = 75;
-  const sizeMb = localGlbFile.size / (1024 * 1024);
-  if (sizeMb > MAX_MB) { setStatus(`Файл слишком большой: ${sizeMb.toFixed(1)} MB (лимит ${MAX_MB} MB). Сожмите: npx gltfpack -i in.glb -o out.glb -cc`); return; }
-  if (!/\.glb$/i.test(localGlbFile.name)) { setStatus('Разрешены только .glb файлы для этого загрузчика.'); return; }
-
-  try {
-    setUploading(true); setStatus('Загрузка файла в Supabase Storage…');
-    const relPath = `${slug(form.brand||'brand')}/${slug(form.model||'model')}/${Date.now()}-${safeFileName(localGlbFile.name)}`;
-    const url = await uploadToSupabaseStorage(localGlbFile, relPath);
-    setUploading(false);
-    if (!url) { setStatus('Не удалось загрузить в Supabase Storage. Проверьте политику доступа для бакета.'); return; }
-    const item = makeItem(url);
-    addLocalItem(item);
-    setForm((s)=>({ ...s, src: url, download: url, title: s.title || localGlbFile.name }));
-    setStatus('Файл загружен в Storage и добавлен в каталог.');
-  } catch (e: any) {
-    setUploading(false);
-    setStatus('Ошибка загрузки: ' + (e?.message || e));
-  }
-};
-
-$1return (v || '')
-      .toString()
-      .normalize('NFKD')
-      .replace(/[̀-ͯ]/g, '')
-      .replace(/[^a-zA-Z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .toLowerCase();
-  } catch { return 'x'; }
-};
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
@@ -758,7 +712,7 @@ $1return (v || '')
         <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={agree} onChange={(e)=>setAgree(!!e?.target?.checked)} required /> <span>Я согласен с <Link className="underline" href="/?view=rules">Правилами</Link> и <Link className="underline" href="/?view=dmca">DMCA/удалением</Link>.</span></label>
 
         <div className="flex flex-wrap items-center gap-3 pt-2">
-          <button type="button" onClick={addLocal} disabled={!agree} className={agree?"px-4 py-2 rounded-xl border bg-white hover:bg-gray-100":"px-4 py-2 rounded-xl border bg-gray-200 text-gray-500 cursor-not-allowed"}>Добавить в каталог (локально)</button>
+          <button type="button" onClick={addLocal} disabled={!agree} className={agree?"px-4 py-2 rounded-xl border bg_WHITE hover:bg-gray-100":"px-4 py-2 rounded-xl border bg-gray-200 text-gray-500 cursor-not-allowed"}>Добавить в каталог (локально)</button>
           <button type="button" onClick={publishRemote} disabled={!agree} className={agree?"px-4 py-2 rounded-xl bg-black text-white":"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed"}>{HAS_SUPABASE?"Опубликовать (Supabase)":"Опубликовать (Supabase не настроен)"}</button>
           {MAILTO_TO && <button type="submit" className="px-4 py-2 rounded-xl border">Отправить на почту</button>}
           <span className="text-xs text-gray-500">Подсказка: можно использовать <code>idb://…</code> (локально), Supabase URL или <code>/models/…</code> из папки public.</span>
@@ -775,7 +729,7 @@ $1return (v || '')
   );
 }
 
-function RulesPage() {
+function RulesPage()() {
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
       <h1 className="text-2xl font-bold mb-2">Правила публикации</h1>
