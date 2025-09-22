@@ -22,30 +22,11 @@ import Script from "next/script";
 // На локалке — в .env.local
 // declare process for TS (in case it complains in this single file)
 // @ts-ignore
-// Не нужна декларация process; Next сам подставит строки при сборке
-// @ts-ignore
-const SUPABASE_URL: string = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
-// @ts-ignore
-const SUPABASE_ANON_KEY: string = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
-const HAS_SUPABASE = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+declare const process: any;
+const SUPABASE_URL: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_SUPABASE_URL) || "";
+const SUPABASE_ANON_KEY: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_SUPABASE_ANON_KEY) || "";
 const HAS_SUPABASE = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
 const SUPABASE_BUCKET = 'models'; // публичный бакет для файлов (создай в Supabase → Storage)
-// Helpers for Storage paths / filenames
-function slug(v: string): string {
-  try {
-    return (v || '')
-      .toString()
-      .normalize('NFKD')
-      .replace(/[\u0300-\u036f]/g, '') // убрать диакритику
-      .replace(/[^a-zA-Z0-9]+/g, '-')  // всё «лишнее» в -
-      .replace(/^-+|-+$/g, '')         // обрезать дефисы по краям
-      .toLowerCase();
-  } catch { return 'x'; }
-}
-function safeFileName(name: string): string {
-  return (name || 'model.glb').replace(/[^a-zA-Z0-9_.-]/g, '_');
-}
-
 
 // Meshy API (AI retexturing: uploads STL/OBJ/FBX/GLTF/GLB and returns textured GLB)
 // Docs: https://docs.meshy.ai/en/api/retexture
@@ -432,7 +413,7 @@ function SubmitPage() {
   const [styleImageUrl, setStyleImageUrl] = useState<string>('');
   const [useOriginalUV, setUseOriginalUV] = useState<boolean>(false);
   const [enablePBR, setEnablePBR] = useState<boolean>(true);
-  const [autoPublishRemote, setAutoPublishRemote] = useState<boolean>(HAS_SUPABASE);
+  const [autoPublishRemote, setAutoPublishRemote] = useState<boolean>(false);
   const [meshyTaskId, setMeshyTaskId] = useState<string>('');
   const [meshyProgress, setMeshyProgress] = useState<number>(0);
   const [meshyPhase, setMeshyPhase] = useState<'idle'|'upload'|'queue'|'run'|'succeeded'|'failed'>('idle');
@@ -583,51 +564,28 @@ function SubmitPage() {
   };
 
   // === Upload GLB to Supabase Storage ===
-  // === Upload GLB to Supabase Storage ===
-const uploadLocalToSupabase = async () => {
+  const uploadLocalToSupabase = async () => {
   if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
   if (!HAS_SUPABASE) { setStatus('Supabase не настроен. Добавьте NEXT_PUBLIC_SUPABASE_URL/ANON_KEY.'); return; }
   if (!localGlbFile) { setStatus('Выберите GLB файл.'); return; }
 
-  // Лимиты/проверки (можно подстроить под себя)
   const MAX_MB = 75;
   const sizeMb = localGlbFile.size / (1024 * 1024);
-  if (sizeMb > MAX_MB) {
-    setStatus(`Файл слишком большой: ${sizeMb.toFixed(1)} MB (лимит ${MAX_MB} MB). Сожмите: npx gltfpack -i in.glb -o out.glb -cc`);
-    return;
-  }
-  if (!/\.glb$/i.test(localGlbFile.name)) {
-    setStatus('Разрешены только .glb файлы для этого загрузчика.');
-    return;
-  }
+  if (sizeMb > MAX_MB) { setStatus(`Файл слишком большой: ${sizeMb.toFixed(1)} MB (лимит ${MAX_MB} MB). Сожмите: npx gltfpack -i in.glb -o out.glb -cc`); return; }
+  if (!/\.glb$/i.test(localGlbFile.name)) { setStatus('Разрешены только .glb файлы для этого загрузчика.'); return; }
 
   try {
-    setUploading(true);
-    setStatus('Загрузка файла в Supabase Storage…');
-
-    // ВАЖНО: вот тут используем helpers → красивый путь brand/model/…
-    const relPath = `${slug(form.brand || 'brand')}/${slug(form.model || 'model')}/${Date.now()}-${safeFileName(localGlbFile.name)}`;
-
-    // Передаём relPath вторым аргументом — uploadToSupabaseStorage уже умеет его принимать
+    setUploading(true); setStatus('Загрузка файла в Supabase Storage…');
+    const relPath = `${slug(form.brand||'brand')}/${slug(form.model||'model')}/${Date.now()}-${safeFileName(localGlbFile.name)}`;
     const url = await uploadToSupabaseStorage(localGlbFile, relPath);
-
     setUploading(false);
-
-    if (!url) {
-      setStatus('Не удалось загрузить в Supabase Storage. Проверьте политику доступа для бакета.');
-      return;
-    }
-
+    if (!url) { setStatus('Не удалось загрузить в Supabase Storage. Проверьте политику доступа для бакета.'); return; }
     const item = makeItem(url);
     addLocalItem(item);
-    setForm((s) => ({ ...s, src: url, download: url, title: s.title || localGlbFile.name }));
+    setForm((s)=>({ ...s, src: url, download: url, title: s.title || localGlbFile.name }));
     setStatus('Файл загружен в Storage и добавлен в каталог.');
-  } catch (e: any) {
-    setUploading(false);
-    setStatus('Ошибка загрузки: ' + (e?.message || e));
-  }
+  } catch (e: any) { setUploading(false); setStatus('Ошибка загрузки: ' + (e?.message || e)); }
 };
-
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
