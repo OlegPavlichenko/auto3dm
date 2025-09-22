@@ -584,10 +584,47 @@ function SubmitPage() {
 
   // === Upload GLB to Supabase Storage ===
 const uploadLocalToSupabase = async () => {
-  // Local helpers (scoped) to avoid name collisions
+  // Local helpers (scoped)
   const slug = (v: string): string => {
     try {
       return (v || '')
+        .toString()
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .toLowerCase();
+    } catch { return 'x'; }
+  };
+  const safeFileName = (name: string): string => (name || 'model.glb').replace(/[^a-zA-Z0-9_.-]/g, '_');
+
+  if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
+  if (!HAS_SUPABASE) { setStatus('Supabase не настроен. Добавьте NEXT_PUBLIC_SUPABASE_URL/ANON_KEY.'); return; }
+  if (!localGlbFile) { setStatus('Выберите GLB файл.'); return; }
+
+  const MAX_MB = 75;
+  const sizeMb = localGlbFile.size / (1024 * 1024);
+  if (sizeMb > MAX_MB) { setStatus(`Файл слишком большой: ${sizeMb.toFixed(1)} MB (лимит ${MAX_MB} MB). Сожмите: npx gltfpack -i in.glb -o out.glb -cc`); return; }
+  if (!/\.glb$/i.test(localGlbFile.name)) { setStatus('Разрешены только .glb файлы для этого загрузчика.'); return; }
+
+  try {
+    setUploading(true);
+    setStatus('Загрузка файла в Supabase Storage…');
+    const relPath = `${slug(form.brand||'brand')}/${slug(form.model||'model')}/${Date.now()}-${safeFileName(localGlbFile.name)}`;
+    const url = await uploadToSupabaseStorage(localGlbFile, relPath);
+    setUploading(false);
+    if (!url) { setStatus('Не удалось загрузить в Supabase Storage. Проверьте политику доступа для бакета.'); return; }
+    const item = makeItem(url);
+    addLocalItem(item);
+    setForm((s)=>({ ...s, src: url, download: url, title: s.title || localGlbFile.name }));
+    setStatus('Файл загружен в Storage и добавлен в каталог.');
+  } catch (e: any) {
+    setUploading(false);
+    setStatus('Ошибка загрузки: ' + (e?.message || e));
+  }
+};
+
+return (v || '')
         .toString()
         .normalize('NFKD')
         .replace(/[̀-ͯ]/g, '')
