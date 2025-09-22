@@ -26,6 +26,25 @@ declare const process: any;
 const SUPABASE_URL: string = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
 const SUPABASE_ANON_KEY: string = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
 const HAS_SUPABASE = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+// --- Debug: покажем в консоль, что реально подставилось (без секретов)
+if (typeof window !== "undefined") {
+  try {
+    const host = SUPABASE_URL ? new URL(SUPABASE_URL).host : "(empty)";
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_HOST: host,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  } catch {
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  }
+}
+
 const SUPABASE_BUCKET = 'models'; // публичный бакет для файлов (создай в Supabase → Storage)
 
 // Meshy API (AI retexturing: uploads STL/OBJ/FBX/GLTF/GLB and returns textured GLB)
@@ -155,6 +174,25 @@ function addLocalItem(item: Item) {
 // Remote (Supabase) — optional publish for everyone
 async function fetchRemoteItems(): Promise<Item[]> {
   if (!HAS_SUPABASE) return [];
+  // --- Debug: покажем в консоль, что реально подставилось (без секретов)
+if (typeof window !== "undefined") {
+  try {
+    const host = SUPABASE_URL ? new URL(SUPABASE_URL).host : "(empty)";
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_HOST: host,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  } catch {
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  }
+}
+
   const url = `${SUPABASE_URL}/rest/v1/items?select=*`;
   const res = await fetch(url, { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } });
   if (!res.ok) { console.warn('Supabase fetch failed', await res.text()); return [];
@@ -165,6 +203,25 @@ async function fetchRemoteItems(): Promise<Item[]> {
 
 async function insertRemoteItem(item: Item): Promise<boolean> {
   if (!HAS_SUPABASE) return false;
+  // --- Debug: покажем в консоль, что реально подставилось (без секретов)
+if (typeof window !== "undefined") {
+  try {
+    const host = SUPABASE_URL ? new URL(SUPABASE_URL).host : "(empty)";
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_HOST: host,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  } catch {
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  }
+}
+
   const url = `${SUPABASE_URL}/rest/v1/items`;
   const payload = { ...item };
   const res = await fetch(url, {
@@ -187,6 +244,25 @@ async function insertRemoteItem(item: Item): Promise<boolean> {
 // Returns a public URL or null on failure
 async function uploadToSupabaseStorage(file: File, pathInBucket?: string): Promise<string | null> {
   if (!HAS_SUPABASE) return null;
+  // --- Debug: покажем в консоль, что реально подставилось (без секретов)
+if (typeof window !== "undefined") {
+  try {
+    const host = SUPABASE_URL ? new URL(SUPABASE_URL).host : "(empty)";
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_HOST: host,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  } catch {
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  }
+}
+
   const safeName = (pathInBucket || `${Date.now()}-${(file.name || 'model.glb').replace(/[^a-z0-9_.-]/gi, '_')}`).replace(/^\/+/, '');
   const uploadUrl = `${SUPABASE_URL}/storage/v1/object/${encodeURIComponent(SUPABASE_BUCKET + '/' + safeName)}`;
   const res = await fetch(uploadUrl, {
@@ -448,6 +524,25 @@ function SubmitPage() {
   const publishRemote = async () => {
     if (!agree) return;
     if (!HAS_SUPABASE) { setStatus('Supabase не настроен. Добавьте переменные окружения и таблицу items.'); return; }
+	// --- Debug: покажем в консоль, что реально подставилось (без секретов)
+if (typeof window !== "undefined") {
+  try {
+    const host = SUPABASE_URL ? new URL(SUPABASE_URL).host : "(empty)";
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_HOST: host,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  } catch {
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  }
+}
+
     setStatus('Публикация…');
     const ok = await insertRemoteItem(makeItem());
     setStatus(ok ? 'Опубликовано в общем каталоге (Supabase).' : 'Не удалось опубликовать в Supabase. Проверьте ключи и политику RLS.');
@@ -581,6 +676,25 @@ function SubmitPage() {
 
   if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
   if (!HAS_SUPABASE) { setStatus('Supabase не настроен. Добавьте NEXT_PUBLIC_SUPABASE_URL/ANON_KEY.'); return; }
+  // --- Debug: покажем в консоль, что реально подставилось (без секретов)
+if (typeof window !== "undefined") {
+  try {
+    const host = SUPABASE_URL ? new URL(SUPABASE_URL).host : "(empty)";
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_HOST: host,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  } catch {
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  }
+}
+
   if (!localGlbFile) { setStatus('Выберите GLB файл.'); return; }
 
   const MAX_MB = 75;
@@ -626,6 +740,25 @@ function SubmitPage() {
           {HAS_SUPABASE && (
             <label className="inline-flex items-center gap-2"><input type="checkbox" checked={autoPublishRemote} onChange={(e)=>setAutoPublishRemote(!!e.target.checked)} /> Сразу опубликовать в общий каталог (Supabase)</label>
           )}
+		  // --- Debug: покажем в консоль, что реально подставилось (без секретов)
+if (typeof window !== "undefined") {
+  try {
+    const host = SUPABASE_URL ? new URL(SUPABASE_URL).host : "(empty)";
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_HOST: host,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  } catch {
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  }
+}
+
         </div>
         <div className="flex items-center gap-3">
           <button type="button" onClick={startMeshyPipeline} disabled={!meshFile || !agree} className={(!meshFile || !agree)?"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed":"px-4 py-2 rounded-xl bg-black text-white"}>Сделать GLB (Meshy)</button>
@@ -669,6 +802,25 @@ function SubmitPage() {
           </div>
         </div>
       )}
+	  // --- Debug: покажем в консоль, что реально подставилось (без секретов)
+if (typeof window !== "undefined") {
+  try {
+    const host = SUPABASE_URL ? new URL(SUPABASE_URL).host : "(empty)";
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_HOST: host,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  } catch {
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  }
+}
+
 
       {/* D. Ручное заполнение карточки */}
       <form onSubmit={MAILTO_TO ? mailtoSubmit : (e)=>e.preventDefault()} className="bg-white border rounded-2xl p-6 grid gap-4">
@@ -692,6 +844,25 @@ function SubmitPage() {
           <button type="button" onClick={addLocal} disabled={!agree} className={agree?"px-4 py-2 rounded-xl border bg-white hover:bg-gray-100":"px-4 py-2 rounded-xl border bg-gray-200 text-gray-500 cursor-not-allowed"}>Добавить в каталог (локально)</button>
           <button type="button" onClick={publishRemote} disabled={!agree} className={agree?"px-4 py-2 rounded-xl bg-black text-white":"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed"}>{HAS_SUPABASE?"Опубликовать (Supabase)":"Опубликовать (Supabase не настроен)"}</button>
           {MAILTO_TO && <button type="submit" className="px-4 py-2 rounded-xl border">Отправить на почту</button>}
+		  // --- Debug: покажем в консоль, что реально подставилось (без секретов)
+if (typeof window !== "undefined") {
+  try {
+    const host = SUPABASE_URL ? new URL(SUPABASE_URL).host : "(empty)";
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_HOST: host,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  } catch {
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  }
+}
+
           <span className="text-xs text-gray-500">Подсказка: можно использовать <code>idb://…</code> (локально), Supabase URL или <code>/models/…</code> из папки public.</span>
         </div>
         {status && <div className="text-sm text-gray-700 bg-gray-50 border rounded-xl p-3">{status}</div>}
@@ -702,6 +873,25 @@ function SubmitPage() {
       ) : (
         <div className="mt-4 text-xs text-gray-500">Чтобы публикации были видны всем, подключите Supabase (переменные <code>NEXT_PUBLIC_SUPABASE_URL</code>, <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>). Для бесплатного хостинга файлов можно использовать Storage (публичный бакет).</div>
       )}
+	  // --- Debug: покажем в консоль, что реально подставилось (без секретов)
+if (typeof window !== "undefined") {
+  try {
+    const host = SUPABASE_URL ? new URL(SUPABASE_URL).host : "(empty)";
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_HOST: host,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  } catch {
+    console.log("[Auto3D] Supabase env", {
+      HAS_SUPABASE,
+      URL_LEN: SUPABASE_URL.length,
+      KEY_LEN: SUPABASE_ANON_KEY.length,
+    });
+  }
+}
+
     </div>
   );
 }
