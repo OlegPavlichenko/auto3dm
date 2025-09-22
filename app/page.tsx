@@ -565,6 +565,20 @@ function SubmitPage() {
 
   // === Upload GLB to Supabase Storage ===
   const uploadLocalToSupabase = async () => {
+  // Local helpers to avoid scope issues
+  const slug = (v: string): string => {
+    try {
+      return (v || '')
+        .toString()
+        .normalize('NFKD')
+        .replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-zA-Z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .toLowerCase();
+    } catch { return 'x'; }
+  };
+  const safeFileName = (name: string): string => (name || 'model.glb').replace(/[^a-zA-Z0-9_.-]/g, '_');
+
   if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
   if (!HAS_SUPABASE) { setStatus('Supabase не настроен. Добавьте NEXT_PUBLIC_SUPABASE_URL/ANON_KEY.'); return; }
   if (!localGlbFile) { setStatus('Выберите GLB файл.'); return; }
