@@ -23,30 +23,9 @@ import Script from "next/script";
 // declare process for TS (in case it complains in this single file)
 // @ts-ignore
 declare const process: any;
-// --- Supabase env ---
-const SUPABASE_URL: string = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
-const SUPABASE_ANON_KEY: string = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
+const SUPABASE_URL: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_SUPABASE_URL) || "";
+const SUPABASE_ANON_KEY: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_SUPABASE_ANON_KEY) || "";
 const HAS_SUPABASE = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
-;(() => {
-  if (typeof window !== "undefined") {
-    try {
-      const host = SUPABASE_URL ? new URL(SUPABASE_URL).host : "(empty)";
-      console.log("[Auto3D] Supabase env", {
-        HAS_SUPABASE,
-        URL_HOST: host,
-        URL_LEN: SUPABASE_URL.length,
-        KEY_LEN: SUPABASE_ANON_KEY.length,
-      });
-    } catch {
-      console.log("[Auto3D] Supabase env", {
-        HAS_SUPABASE,
-        URL_LEN: SUPABASE_URL.length,
-        KEY_LEN: SUPABASE_ANON_KEY.length,
-      });
-    }
-  }
-})();
-
 const SUPABASE_BUCKET = 'models'; // публичный бакет для файлов (создай в Supabase → Storage)
 
 // Meshy API (AI retexturing: uploads STL/OBJ/FBX/GLTF/GLB and returns textured GLB)
@@ -70,7 +49,59 @@ declare global {
 }
 
 // --- Hook: inject <model-viewer> & report readiness ---
+function useModelViewerReady() {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const isReady = () => {
+      try { return !!(window as any)?.customElements?.get?.('model-viewer'); } catch { return false; }
+    };
+    if (isReady()) { setReady(true); return; }
+    // Poll until <model-viewer> registers (Script is injected in AppShell)
+    let tries = 0;
+    const tm = setInterval(() => {
+      tries++;
+      if (isReady()) { setReady(true); clearInterval(tm); }
+      else if (tries > 200) { clearInterval(tm); }
+    }, 50);
+    return () => clearInterval(tm);
+  }, []);
+  return ready;
+}
+function useModelViewerReady() {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
 
+    const isReady = () => {
+      try { return !!(window as any)?.customElements?.get?.('model-viewer'); } catch { return false; }
+    };
+
+    if (isReady()) { setReady(true); return; }
+
+    // Fallback: inject CDN script if not present (jsDelivr → unpkg)
+    const ensureCdn = (id: string, src: string, onError?: () => void) => {
+      if (document.getElementById(id)) return;
+      const s = document.createElement('script');
+      s.id = id; s.type = 'module'; s.src = src;
+      s.onerror = () => { console.error('Failed to load model-viewer from', src); onError?.(); };
+      document.head.appendChild(s);
+    };
+    // If Next <Script id="model-viewer-script"> didn't run yet, add one
+    ensureCdn('model-viewer-script', 'https://cdn.jsdelivr.net/npm/@google/model-viewer/dist/model-viewer.min.js', () => {
+      ensureCdn('model-viewer-script-2', 'https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js');
+    });
+
+    let tries = 0;
+    const tm = setInterval(() => {
+      tries += 1;
+      if (isReady()) { setReady(true); clearInterval(tm); }
+      else if (tries > 300) { clearInterval(tm); console.warn('model-viewer did not register (CDN blocked?). Showing poster only.'); }
+    }, 50);
+    return () => clearInterval(tm);
+  }, []);
+  return ready;
+}
 
 // --- Demo GLBs (textures embedded; CORS‑safe) ---
 const SAMPLE_DUCK =
@@ -552,11 +583,47 @@ function SubmitPage() {
   };
 
   // === Upload GLB to Supabase Storage ===
-  const uploadLocalToSupabase = async () => {
-  // Local helpers to avoid scope issues
+const uploadLocalToSupabase = async () => {
+  // Local helpers (scoped) to avoid name collisions
   const slug = (v: string): string => {
+    try {
+      return (v || '')
+        .toString()
+        .normalize('NFKD')
+        .replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-zA-Z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .toLowerCase();
+    } catch { return 'x'; }
+  };
+  const safeFileName = (name: string): string => (name || 'model.glb').replace(/[^a-zA-Z0-9_.-]/g, '_');
+
+  if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
+  if (!HAS_SUPABASE) { setStatus('Supabase не настроен. Добавьте NEXT_PUBLIC_SUPABASE_URL/ANON_KEY.'); return; }
+  if (!localGlbFile) { setStatus('Выберите GLB файл.'); return; }
+
+  const MAX_MB = 75;
+  const sizeMb = localGlbFile.size / (1024 * 1024);
+  if (sizeMb > MAX_MB) { setStatus(`Файл слишком большой: ${sizeMb.toFixed(1)} MB (лимит ${MAX_MB} MB). Сожмите: npx gltfpack -i in.glb -o out.glb -cc`); return; }
+  if (!/\.glb$/i.test(localGlbFile.name)) { setStatus('Разрешены только .glb файлы для этого загрузчика.'); return; }
+
   try {
-    return (v || '')
+    setUploading(true); setStatus('Загрузка файла в Supabase Storage…');
+    const relPath = `${slug(form.brand||'brand')}/${slug(form.model||'model')}/${Date.now()}-${safeFileName(localGlbFile.name)}`;
+    const url = await uploadToSupabaseStorage(localGlbFile, relPath);
+    setUploading(false);
+    if (!url) { setStatus('Не удалось загрузить в Supabase Storage. Проверьте политику доступа для бакета.'); return; }
+    const item = makeItem(url);
+    addLocalItem(item);
+    setForm((s)=>({ ...s, src: url, download: url, title: s.title || localGlbFile.name }));
+    setStatus('Файл загружен в Storage и добавлен в каталог.');
+  } catch (e: any) {
+    setUploading(false);
+    setStatus('Ошибка загрузки: ' + (e?.message || e));
+  }
+};
+
+$1return (v || '')
       .toString()
       .normalize('NFKD')
       .replace(/[̀-ͯ]/g, '')
@@ -876,11 +943,9 @@ function AppShell({ children }: { children: React.ReactNode }) {
 
 export default function AppRouter() {
   const view = useView();
-
   let page: React.ReactNode = <CatalogApp />;
   if (view === 'submit') page = <SubmitPage />;
-  if (view === 'dmca') page = <DmcaPage />;
-  if (view === 'rules') page = <RulesPage />;
-
+  else if (view === 'rules') page = <RulesPage />;
+  else if (view === 'dmca') page = <DmcaPage />;
   return <AppShell>{page}</AppShell>;
 }
