@@ -740,6 +740,8 @@ if (typeof window !== "undefined") {
           {HAS_SUPABASE && (
             <label className="inline-flex items-center gap-2"><input type="checkbox" checked={autoPublishRemote} onChange={(e)=>setAutoPublishRemote(!!e.target.checked)} /> Сразу опубликовать в общий каталог (Supabase)</label>
           )}
+  }
+}
 		  // --- Debug: покажем в консоль, что реально подставилось (без секретов)
 if (typeof window !== "undefined") {
   try {
@@ -756,8 +758,6 @@ if (typeof window !== "undefined") {
       URL_LEN: SUPABASE_URL.length,
       KEY_LEN: SUPABASE_ANON_KEY.length,
     });
-  }
-}
 
         </div>
         <div className="flex items-center gap-3">
