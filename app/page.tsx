@@ -22,9 +22,12 @@ import Script from "next/script";
 // На локалке — в .env.local
 // declare process for TS (in case it complains in this single file)
 // @ts-ignore
-declare const process: any;
-const SUPABASE_URL: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_SUPABASE_URL) || "";
-const SUPABASE_ANON_KEY: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_SUPABASE_ANON_KEY) || "";
+// Не нужна декларация process; Next сам подставит строки при сборке
+// @ts-ignore
+const SUPABASE_URL: string = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
+// @ts-ignore
+const SUPABASE_ANON_KEY: string = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
+const HAS_SUPABASE = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
 const HAS_SUPABASE = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
 const SUPABASE_BUCKET = 'models'; // публичный бакет для файлов (создай в Supabase → Storage)
 // Helpers for Storage paths / filenames
