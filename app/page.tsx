@@ -35,6 +35,7 @@ const SUPABASE_BUCKET = 'models'; // публичный бакет для фай
 const MESHY_API_KEY: string = (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_MESHY_API_KEY) || 'msy_dummy_api_key_for_test_mode_12345678';
 const HAS_MESHY = !!MESHY_API_KEY;
 
+
 const FORM_EMBED_URL = ""; // Google Form embed URL (опционально)
 const MAILTO_TO = ""; // если пусто — локальная кнопка mailto не появится
 const CONTACT_EMAIL = MAILTO_TO || "contact@example.com"; // для Rules/DMCA
@@ -49,25 +50,6 @@ declare global {
 }
 
 // --- Hook: inject <model-viewer> & report readiness ---
-function useModelViewerReady() {
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const isReady = () => {
-      try { return !!(window as any)?.customElements?.get?.('model-viewer'); } catch { return false; }
-    };
-    if (isReady()) { setReady(true); return; }
-    // Poll until <model-viewer> registers (Script is injected in AppShell)
-    let tries = 0;
-    const tm = setInterval(() => {
-      tries++;
-      if (isReady()) { setReady(true); clearInterval(tm); }
-      else if (tries > 200) { clearInterval(tm); }
-    }, 50);
-    return () => clearInterval(tm);
-  }, []);
-  return ready;
-}
 function useModelViewerReady() {
   const [ready, setReady] = useState(false);
   useEffect(() => {
@@ -473,29 +455,30 @@ function SubmitPage() {
   };
 
   const mailtoSubmit = (e: React.FormEvent) => {
-  e.preventDefault();
-  if (!MAILTO_TO) return;
-  const normalizedSrc = toDirectLink(form.src);
-  const normalizedDownload = toDirectLink(form.download || form.src);
-  const subject = `Auto3D submission: ${form.brand} ${form.model} — ${form.title}`.trim();
-  const body = [
-    `Author: ${form.author}`,
-    `Email: ${form.email}`,
-    `Brand: ${form.brand}`,
-    `Model: ${form.model}`,
-    `Title: ${form.title}`,
-    `Subsystem: ${form.subsystem}`,
-    `License: ${form.license}`,
-    `Agreed to rules: yes`,   // <-- ДОЛЖНА быть запятая, не точка с запятой!
-    `Viewer src: ${normalizedSrc}`,
-    `Download: ${normalizedDownload}`,
-    '',
-    'Description:',
-    form.description,
-  ].join('%0D%0A');
-  const href = `mailto:${encodeURIComponent(MAILTO_TO)}?subject=${encodeURIComponent(subject)}&body=${body}`;
-  if (typeof window !== 'undefined') window.location.href = href;
-};
+    e.preventDefault();
+    if (!MAILTO_TO) return;
+    const normalizedSrc = toDirectLink(form.src);
+    const normalizedDownload = toDirectLink(form.download || form.src);
+    const subject = `Auto3D submission: ${form.brand} ${form.model} — ${form.title}`.trim();
+    const body = [
+      `Author: ${form.author}`,
+      `Email: ${form.email}`,
+      `Brand: ${form.brand}`,
+      `Model: ${form.model}`,
+      `Title: ${form.title}`,
+      `Subsystem: ${form.subsystem}`,
+      `License: ${form.license}`,
+      `Agreed to rules: yes`,
+
+      `Viewer src: ${normalizedSrc}`,
+      `Download: ${normalizedDownload}`,
+      '',
+      'Description:',
+      form.description,
+    ].join('%0D%0A');
+    const href = `mailto:${encodeURIComponent(MAILTO_TO)}?subject=${encodeURIComponent(subject)}&body=${body}`;
+    if (typeof window !== 'undefined') window.location.href = href;
+  };
 
   // === Meshy integration ===
   async function fileToDataURI(file: File): Promise<string> {
@@ -581,60 +564,6 @@ function SubmitPage() {
       setStatus('Не удалось сохранить локально: ' + (e?.message || e));
     }
   };
-  <div className="bg-white border rounded-2xl p-6 grid gap-4 mb-8">
-  <h2 className="text-lg font-semibold">Загрузка на GitHub</h2>
-  <p className="text-sm text-gray-600">
-    Файл коммитится в {process.env.GH_REPO ? <code>{process.env.GH_REPO}</code> : 'указанный в настройках репозиторий'}.
-    Ссылка отдаётся через jsDelivr.
-  </p>
-  <label className="grid gap-1">
-    <span className="text-sm text-gray-600">GLB файл</span>
-    <input type="file" accept=".glb" onChange={(e)=>setLocalGlbFile(e.target.files?.[0]||null)} className="px-3 py-2 rounded-xl border" />
-  </label>
-  <div className="flex items-center gap-3">
-    <button type="button" onClick={uploadToGitHub} disabled={!localGlbFile || !agree || uploading}
-      className={(!localGlbFile || !agree || uploading) ? "px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed" : "px-4 py-2 rounded-xl bg-black text-white"}>
-      {uploading ? 'Загружаем…' : 'Загрузить на GitHub и добавить'}
-    </button>
-    <span className="text-xs text-gray-500">CDN-ссылка добавится в карточку автоматически.</span>
-  </div>
-</div>
-
-  // Внутри SubmitPage(), рядом с addLocalFromFile
-const uploadToGitHub = async () => {
-  const endpoint = UPLOAD_ENDPOINT || '/api/gh-upload';
-  if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
-  if (!localGlbFile) { setStatus('Выберите GLB файл.'); return; }
-
-  const sizeMb = localGlbFile.size / (1024 * 1024);
-  if (sizeMb > 75) { setStatus(`Файл ${sizeMb.toFixed(1)} MB > лимита 75 MB (GitHub контент лучше держать до ~50–75 MB).`); return; }
-
-  try {
-    setUploading(true);
-    setStatus('Загрузка на GitHub…');
-    const fd = new FormData();
-    fd.append('file', localGlbFile, localGlbFile.name || 'model.glb');
-    fd.append('brand', form.brand);
-    fd.append('model', form.model);
-    const res = await fetch(endpoint, { method: 'POST', body: fd });
-    const data = await res.json();
-    setUploading(false);
-
-    if (!res.ok || !data?.url) {
-      setStatus(`Ошибка загрузки: ${data?.error || res.statusText}`);
-      return;
-    }
-    const url: string = data.url; // cdn.jsdelivr
-    const item = makeItem(url);
-    addLocalItem(item);
-    setForm(s => ({ ...s, src: url, download: url, title: s.title || (localGlbFile?.name || 'GLB') }));
-    setStatus('Файл загружен на GitHub и добавлен в каталог.');
-  } catch (e:any) {
-    setUploading(false);
-    setStatus('Ошибка: ' + (e?.message || e));
-  }
-};
-
 
   // === Upload GLB to Supabase Storage ===
   const uploadLocalToSupabase = async () => {
@@ -783,7 +712,7 @@ const uploadToGitHub = async () => {
   );
 }
 
-function RulesPage()() {
+function RulesPage() {
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
       <h1 className="text-2xl font-bold mb-2">Правила публикации</h1>
