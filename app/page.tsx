@@ -581,6 +581,60 @@ function SubmitPage() {
       setStatus('Не удалось сохранить локально: ' + (e?.message || e));
     }
   };
+  <div className="bg-white border rounded-2xl p-6 grid gap-4 mb-8">
+  <h2 className="text-lg font-semibold">Загрузка на GitHub</h2>
+  <p className="text-sm text-gray-600">
+    Файл коммитится в {process.env.GH_REPO ? <code>{process.env.GH_REPO}</code> : 'указанный в настройках репозиторий'}.
+    Ссылка отдаётся через jsDelivr.
+  </p>
+  <label className="grid gap-1">
+    <span className="text-sm text-gray-600">GLB файл</span>
+    <input type="file" accept=".glb" onChange={(e)=>setLocalGlbFile(e.target.files?.[0]||null)} className="px-3 py-2 rounded-xl border" />
+  </label>
+  <div className="flex items-center gap-3">
+    <button type="button" onClick={uploadToGitHub} disabled={!localGlbFile || !agree || uploading}
+      className={(!localGlbFile || !agree || uploading) ? "px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed" : "px-4 py-2 rounded-xl bg-black text-white"}>
+      {uploading ? 'Загружаем…' : 'Загрузить на GitHub и добавить'}
+    </button>
+    <span className="text-xs text-gray-500">CDN-ссылка добавится в карточку автоматически.</span>
+  </div>
+</div>
+
+  // Внутри SubmitPage(), рядом с addLocalFromFile
+const uploadToGitHub = async () => {
+  const endpoint = UPLOAD_ENDPOINT || '/api/gh-upload';
+  if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
+  if (!localGlbFile) { setStatus('Выберите GLB файл.'); return; }
+
+  const sizeMb = localGlbFile.size / (1024 * 1024);
+  if (sizeMb > 75) { setStatus(`Файл ${sizeMb.toFixed(1)} MB > лимита 75 MB (GitHub контент лучше держать до ~50–75 MB).`); return; }
+
+  try {
+    setUploading(true);
+    setStatus('Загрузка на GitHub…');
+    const fd = new FormData();
+    fd.append('file', localGlbFile, localGlbFile.name || 'model.glb');
+    fd.append('brand', form.brand);
+    fd.append('model', form.model);
+    const res = await fetch(endpoint, { method: 'POST', body: fd });
+    const data = await res.json();
+    setUploading(false);
+
+    if (!res.ok || !data?.url) {
+      setStatus(`Ошибка загрузки: ${data?.error || res.statusText}`);
+      return;
+    }
+    const url: string = data.url; // cdn.jsdelivr
+    const item = makeItem(url);
+    addLocalItem(item);
+    setForm(s => ({ ...s, src: url, download: url, title: s.title || (localGlbFile?.name || 'GLB') }));
+    setStatus('Файл загружен на GitHub и добавлен в каталог.');
+  } catch (e:any) {
+    setUploading(false);
+    setStatus('Ошибка: ' + (e?.message || e));
+  }
+};
+
 
   // === Upload GLB to Supabase Storage ===
   const uploadLocalToSupabase = async () => {
