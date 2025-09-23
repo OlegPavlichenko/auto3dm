@@ -486,7 +486,8 @@ function SubmitPage() {
       `Title: ${form.title}`,
       `Subsystem: ${form.subsystem}`,
       `License: ${form.license}`,
-      `Agreed to rules: yes`;
+      `Agreed to rules: yes`,
+
       `Viewer src: ${normalizedSrc}`,
       `Download: ${normalizedDownload}`,
       '',
@@ -712,7 +713,7 @@ function SubmitPage() {
         <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={agree} onChange={(e)=>setAgree(!!e?.target?.checked)} required /> <span>Я согласен с <Link className="underline" href="/?view=rules">Правилами</Link> и <Link className="underline" href="/?view=dmca">DMCA/удалением</Link>.</span></label>
 
         <div className="flex flex-wrap items-center gap-3 pt-2">
-          <button type="button" onClick={addLocal} disabled={!agree} className={agree?"px-4 py-2 rounded-xl border bg_WHITE hover:bg-gray-100":"px-4 py-2 rounded-xl border bg-gray-200 text-gray-500 cursor-not-allowed"}>Добавить в каталог (локально)</button>
+          <button type="button" onClick={addLocal} disabled={!agree} className={agree?"px-4 py-2 rounded-xl border bg-white hover:bg-gray-100":"px-4 py-2 rounded-xl border bg-gray-200 text-gray-500 cursor-not-allowed"}>Добавить в каталог (локально)</button>
           <button type="button" onClick={publishRemote} disabled={!agree} className={agree?"px-4 py-2 rounded-xl bg-black text-white":"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed"}>{HAS_SUPABASE?"Опубликовать (Supabase)":"Опубликовать (Supabase не настроен)"}</button>
           {MAILTO_TO && <button type="submit" className="px-4 py-2 rounded-xl border">Отправить на почту</button>}
           <span className="text-xs text-gray-500">Подсказка: можно использовать <code>idb://…</code> (локально), Supabase URL или <code>/models/…</code> из папки public.</span>
