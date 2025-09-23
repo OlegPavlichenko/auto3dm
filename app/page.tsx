@@ -473,30 +473,29 @@ function SubmitPage() {
   };
 
   const mailtoSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!MAILTO_TO) return;
-    const normalizedSrc = toDirectLink(form.src);
-    const normalizedDownload = toDirectLink(form.download || form.src);
-    const subject = `Auto3D submission: ${form.brand} ${form.model} — ${form.title}`.trim();
-    const body = [
-      `Author: ${form.author}`,
-      `Email: ${form.email}`,
-      `Brand: ${form.brand}`,
-      `Model: ${form.model}`,
-      `Title: ${form.title}`,
-      `Subsystem: ${form.subsystem}`,
-      `License: ${form.license}`,
-      `Agreed to rules: yes`,
-
-      `Viewer src: ${normalizedSrc}`,
-      `Download: ${normalizedDownload}`,
-      '',
-      'Description:',
-      form.description,
-    ].join('%0D%0A');
-    const href = `mailto:${encodeURIComponent(MAILTO_TO)}?subject=${encodeURIComponent(subject)}&body=${body}`;
-    if (typeof window !== 'undefined') window.location.href = href;
-  };
+  e.preventDefault();
+  if (!MAILTO_TO) return;
+  const normalizedSrc = toDirectLink(form.src);
+  const normalizedDownload = toDirectLink(form.download || form.src);
+  const subject = `Auto3D submission: ${form.brand} ${form.model} — ${form.title}`.trim();
+  const body = [
+    `Author: ${form.author}`,
+    `Email: ${form.email}`,
+    `Brand: ${form.brand}`,
+    `Model: ${form.model}`,
+    `Title: ${form.title}`,
+    `Subsystem: ${form.subsystem}`,
+    `License: ${form.license}`,
+    `Agreed to rules: yes`,   // <-- ДОЛЖНА быть запятая, не точка с запятой!
+    `Viewer src: ${normalizedSrc}`,
+    `Download: ${normalizedDownload}`,
+    '',
+    'Description:',
+    form.description,
+  ].join('%0D%0A');
+  const href = `mailto:${encodeURIComponent(MAILTO_TO)}?subject=${encodeURIComponent(subject)}&body=${body}`;
+  if (typeof window !== 'undefined') window.location.href = href;
+};
 
   // === Meshy integration ===
   async function fileToDataURI(file: File): Promise<string> {
