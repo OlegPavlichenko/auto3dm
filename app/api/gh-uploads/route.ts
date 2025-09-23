@@ -1,103 +1,88 @@
 // app/api/gh-upload/route.ts
-export const runtime = 'nodejs';
-
-import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
+
+const GH_TOKEN  = process.env.GH_TOKEN!;
+const GH_REPO   = process.env.GH_REPO!;    // "user/repo"
+const GH_BRANCH = process.env.GH_BRANCH || 'main';
 
 function slug(v: string) {
   try {
-    return (v || '')
-      .toString()
-      .normalize('NFKD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-zA-Z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .toLowerCase();
+    return (v || '').normalize('NFKD').replace(/[\u0300-\u036f]/g,'')
+      .replace(/[^a-zA-Z0-9]+/g,'-').replace(/^-+|-+$/g,'').toLowerCase() || 'x';
   } catch { return 'x'; }
 }
-function safeFileName(name: string) {
-  return (name || 'file.bin').replace(/[^a-zA-Z0-9_.-]/g, '_');
-}
-function joinPathEncoded(p: string) {
-  return p.split('/').map(encodeURIComponent).join('/'); // кодируем сегменты, не слэши
-}
+const safeName = (n: string) => (n || 'file.bin').replace(/[^a-zA-Z0-9_.-]/g,'_');
 
-async function putToGithub(opts: {
-  repo: string; branch: string; token: string;
-  path: string; contentBase64: string; message: string;
-}) {
-  const url = `https://api.github.com/repos/${opts.repo}/contents/${joinPathEncoded(opts.path)}`;
+async function putContent(path: string, content: Buffer, message: string) {
+  const url = `https://api.github.com/repos/${GH_REPO}/contents/${encodeURIComponent(path)}`;
+  const body = {
+    message,
+    content: content.toString('base64'),
+    branch: GH_BRANCH,
+  };
   const res = await fetch(url, {
     method: 'PUT',
     headers: {
-      'Authorization': `Bearer ${opts.token}`,
-      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${GH_TOKEN}`,
       'Accept': 'application/vnd.github+json',
+      'Content-Type': 'application/json',
       'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'auto3d-uploader'
     },
-    body: JSON.stringify({
-      message: opts.message,
-      content: opts.contentBase64,
-      branch: opts.branch,
-    }),
-    cache: 'no-store',
+    body: JSON.stringify(body),
   });
+  const data = await res.json();
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`GitHub PUT ${res.status}: ${text}`);
+    throw new Error(`${res.status} ${res.statusText} — ${data?.message || 'upload failed'}`);
   }
-  return res.json();
+  // commit SHA пригодится для immutable CDN URL
+  const commitSha = data?.commit?.sha as string | undefined;
+  return { commitSha };
 }
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
-    const token  = process.env.GH_TOKEN  || '';
-    const repo   = process.env.GH_REPO   || '';
-    const branch = process.env.GH_BRANCH || 'main';
-    if (!token || !repo) {
-      return NextResponse.json({ error: 'Server not configured. Set GH_TOKEN, GH_REPO, GH_BRANCH' }, { status: 500 });
+    if (!GH_TOKEN || !GH_REPO) {
+      return NextResponse.json({ error: 'Server is not configured (GH_TOKEN/GH_REPO missing)' }, { status: 500 });
     }
 
     const form = await req.formData();
-    const brand = slug(String(form.get('brand') || 'brand'));
-    const model = slug(String(form.get('model') || 'model'));
-    const baseDir = `${brand}/${model}/${Date.now()}`;
+    const file = form.get('file') as File | null;   // модель/архив — опционально
+    const image = form.get('image') as File | null; // превью — опционально, но желательно
+    const brand = String(form.get('brand') || 'brand');
+    const model = String(form.get('model') || 'model');
 
-    const file  = form.get('file')  as File | null; // основной файл (GLB/STL/ZIP/…)
-    const image = form.get('image') as File | null; // превью (PNG/JPG/WEBP)
-
-    let fileCdnUrl: string | undefined;
-    let imageCdnUrl: string | undefined;
-
-    async function fileToBase64(f: File) {
-      const buf = Buffer.from(await f.arrayBuffer());
-      const max = 75 * 1024 * 1024; // мягкий лимит (GitHub ~100MB)
-      if (buf.length > max) throw new Error(`File ${f.name} is too large (${(buf.length/1024/1024).toFixed(1)} MB)`);
-      return buf.toString('base64');
+    if (!file && !image) {
+      return NextResponse.json({ error: 'Nothing to upload (pick image and/or file).' }, { status: 400 });
     }
 
+    const brandSlug = slug(brand);
+    const modelSlug = slug(model);
+    const ts = Date.now();
+
+    let fileUrl: string | undefined;
+    let imageUrl: string | undefined;
+    let commitSha: string | undefined;
+
     if (file) {
-      const b64 = await fileToBase64(file);
-      const rel = `${baseDir}/${safeFileName(file.name || 'model.bin')}`;
-      const resp = await putToGithub({ repo, branch, token, path: rel, contentBase64: b64, message: `Upload ${rel}` });
-      const sha = resp?.commit?.sha || '';
-      fileCdnUrl = sha
-        ? `https://cdn.jsdelivr.net/gh/${repo}@${sha}/${rel}`
-        : `https://cdn.jsdelivr.net/gh/${repo}@${branch}/${rel}`;
+      const buf = Buffer.from(await file.arrayBuffer());
+      const path = `${brandSlug}/${modelSlug}/${ts}-${safeName(file.name || 'file.bin')}`;
+      const r = await putContent(path, buf, `upload file ${path}`);
+      commitSha = r.commitSha || commitSha;
+      // jsDelivr immutable по SHA коммита
+      fileUrl = `https://cdn.jsdelivr.net/gh/${GH_REPO}@${commitSha || GH_BRANCH}/${path}`;
     }
 
     if (image) {
-      const b64 = await fileToBase64(image);
-      const rel = `${baseDir}/${safeFileName(image.name || 'preview.png')}`;
-      const resp = await putToGithub({ repo, branch, token, path: rel, contentBase64: b64, message: `Upload ${rel}` });
-      const sha = resp?.commit?.sha || '';
-      imageCdnUrl = sha
-        ? `https://cdn.jsdelivr.net/gh/${repo}@${sha}/${rel}`
-        : `https://cdn.jsdelivr.net/gh/${repo}@${branch}/${rel}`;
+      const buf = Buffer.from(await image.arrayBuffer());
+      const path = `${brandSlug}/${modelSlug}/${ts}-${safeName(image.name || 'preview.jpg')}`;
+      const r = await putContent(path, buf, `upload image ${path}`);
+      commitSha = r.commitSha || commitSha;
+      imageUrl = `https://cdn.jsdelivr.net/gh/${GH_REPO}@${commitSha || GH_BRANCH}/${path}`;
     }
 
-    return NextResponse.json({ ok: true, url: fileCdnUrl, imageUrl: imageCdnUrl });
+    return NextResponse.json({ url: fileUrl, imageUrl }, { status: 200 });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || String(e) }, { status: 400 });
+    return NextResponse.json({ error: e?.message || 'Upload failed' }, { status: 500 });
   }
 }

@@ -66,29 +66,21 @@ function addLocalItem(item: Item) {
 // ========= Demo data (static) =========
 const IMG = (t: string) => `https://placehold.co/800x450?text=${encodeURIComponent(t)}`;
 const initialItems: Item[] = [
-  {
-    id: 'kia-carnival-cupholder',
-    brand: 'Kia',
-    model: 'Carnival',
-    title: 'Cupholder insert (demo)',
-    subsystem: 'interior',
-    image: IMG('Kia Carnival — Cupholder'),
-    src: '',          // можно оставить пустым, чтобы показывалась картинка
-    download: '#'
-  },
+  { id: 'kia-carnival-cupholder', brand: 'Kia',        model: 'Carnival',  title: 'Cupholder insert (demo)', subsystem: 'interior',   image: IMG('Kia Carnival — Cupholder'),  download: undefined },
+  { id: 'toyota-bb-hook',         brand: 'Toyota',     model: 'bB',        title: 'Cargo hook (demo)',       subsystem: 'interior',   image: IMG('Toyota bB — Hook'),          download: undefined },
+  { id: 'vw-golf3-vent',          brand: 'Volkswagen', model: 'Golf 3',    title: 'Vent clip mount (demo)',  subsystem: 'interior',   image: IMG('Golf 3 — Vent'),             download: undefined },
 ];
 
 // ========= Minimal client router =========
 function useView() {
   const [view, setView] = useState<string>('');
-
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    // Патчим history один раз — чтобы любые push/replace диспатчили наш эвент
+    // Patch history once to emit a custom event on push/replace
     const w = window as any;
     if (!w.__auto3d_history_patched) {
-      const wrap = (fn: any) => function (this: any, ...args: any[]) {
+      const wrap = (fn: any) => function(this: any, ...args: any[]) {
         const ret = fn.apply(this, args);
         try { window.dispatchEvent(new Event('url-change')); } catch {}
         return ret;
@@ -103,22 +95,21 @@ function useView() {
     const sync = () => {
       const url = new URL(window.location.href);
       const pathname = url.pathname.toLowerCase();
-
-      // Поддержка “красивых” путей → один маршрут с ?view=
-      if (pathname === '/submit' || pathname === '/sumbit') { url.pathname = '/'; url.searchParams.set('view', 'submit'); history.replaceState({}, '', url.toString()); }
-      if (pathname === '/rules') { url.pathname = '/'; url.searchParams.set('view', 'rules'); history.replaceState({}, '', url.toString()); }
-      if (pathname === '/dmca')  { url.pathname = '/'; url.searchParams.set('view', 'dmca');  history.replaceState({}, '', url.toString()); }
-
+      if (pathname === '/submit' || pathname === '/sumbit') { url.pathname = '/'; url.searchParams.set('view','submit'); history.replaceState({}, '', url.toString()); }
+      if (pathname === '/rules')  { url.pathname = '/'; url.searchParams.set('view','rules');  history.replaceState({}, '', url.toString()); }
+      if (pathname === '/dmca')   { url.pathname = '/'; url.searchParams.set('view','dmca');   history.replaceState({}, '', url.toString()); }
       setView((url.searchParams.get('view') || '').toLowerCase());
     };
 
-    // 1) обычные события
+    // Initial sync
+    sync();
+
     const onChange = () => sync();
     window.addEventListener('popstate', onChange);
     window.addEventListener('hashchange', onChange);
     window.addEventListener('url-change', onChange);
 
-    // 2) Fallback: опрос href (Next <Link> иногда не шлёт наши события)
+    // Fallback: poll href to catch any client-side nav that didn't touch history
     let lastHref = window.location.href;
     const poll = setInterval(() => {
       if (lastHref !== window.location.href) {
@@ -127,9 +118,6 @@ function useView() {
       }
     }, 250);
 
-    // первый sync
-    sync();
-
     return () => {
       window.removeEventListener('popstate', onChange);
       window.removeEventListener('hashchange', onChange);
@@ -137,7 +125,6 @@ function useView() {
       clearInterval(poll);
     };
   }, []);
-
   return view;
 }
 
@@ -358,13 +345,6 @@ function CatalogApp() {
           {items.map(i => (
             <article key={i.id} className="bg-white rounded-2xl border shadow-sm overflow-hidden hover:shadow-md transition">
               <div className="bg-gray-100 flex items-center justify-center relative" style={{ aspectRatio: '16 / 9' }}>
-  {i.image ? (
-    <img src={i.image} alt={i.title} className="absolute inset-0 w-full h-full object-cover" />
-  ) : (
-    <SafeModelViewer src={i.src} alt={i.title} poster={POSTER_SVG} />
-  )}
-</div>
-
                 <img src={i.image} alt={i.title} className="absolute inset-0 w-full h-full object-cover"/>
               </div>
               <div className="p-4">
