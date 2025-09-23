@@ -37,7 +37,7 @@ function slug(v: string): string {
     return (v || '')
       .toString()
       .normalize('NFKD')
-      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[̀-ͯ]/g, '')
       .replace(/[^a-zA-Z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '')
       .toLowerCase();
@@ -66,9 +66,12 @@ function addLocalItem(item: Item) {
 // ========= Demo data (static) =========
 const IMG = (t: string) => `https://placehold.co/800x450?text=${encodeURIComponent(t)}`;
 const initialItems: Item[] = [
-  { id: 'kia-carnival-cupholder', brand: 'Kia',      model: 'Carnival', title: 'Cupholder insert (demo)', subsystem: 'interior',   image: IMG('Kia Carnival\nCupholder') , download: undefined },
-  { id: 'toyota-bb-hook',         brand: 'Toyota',   model: 'bB',       title: 'Cargo hook (demo)',       subsystem: 'interior',   image: IMG('Toyota bB\nHook'),         download: undefined },
-  { id: 'vw-golf3-vent',          brand: 'Volkswagen', model: 'Golf 3', title: 'Vent clip mount (demo)', subsystem: 'interior',   image: IMG('Golf 3\nVent'),             download: undefined },
+  { id: 'kia-carnival-cupholder', brand: 'Kia',      model: 'Carnival', title: 'Cupholder insert (demo)', subsystem: 'interior',   image: IMG('Kia Carnival
+Cupholder') , download: undefined },
+  { id: 'toyota-bb-hook',         brand: 'Toyota',   model: 'bB',       title: 'Cargo hook (demo)',       subsystem: 'interior',   image: IMG('Toyota bB
+Hook'),         download: undefined },
+  { id: 'vw-golf3-vent',          brand: 'Volkswagen', model: 'Golf 3', title: 'Vent clip mount (demo)', subsystem: 'interior',   image: IMG('Golf 3
+Vent'),             download: undefined },
 ];
 
 // ========= Minimal client router =========
