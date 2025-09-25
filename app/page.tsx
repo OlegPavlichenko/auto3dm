@@ -137,6 +137,9 @@ function SubmitPage() {
   const [imgFile, setImgFile] = useState<File|null>(null);
   const [uploading, setUploading] = useState(false);
   const [diag, setDiag] = useState<string>('');
+  const [serverOk, setServerOk] = useState<boolean>(false);
+
+  useEffect(()=>{ pingApi(); },[]);
 
   const pingApi = async () => {
     try {
@@ -147,33 +150,20 @@ function SubmitPage() {
       let payload: any = undefined;
       try { payload = JSON.parse(text); } catch {}
       if (!res.ok) {
-        setDiag(`GET ${url} → ${res.status} ${res.statusText}. Тело: ${payload ? JSON.stringify(payload) : text || '(пусто)'}
-Если это 404 — маршрут /api/gh-upload не найден. Создайте файл app/api/gh-upload/route.ts и задеплойте.`);
-        return;
+      const baseMsg = `Ошибка загрузки: HTTP ${res.status} ${res.statusText}. Ответ: ${data?.error || raw || '(пусто)'}`;
+      if (res.status === 401) {
+        setStatus(`${baseMsg}
+Похоже, токен не даёт права на запись. Проверьте:
+• GH_TOKEN — действительный PAT (classic: scope "repo" для приватных или "public_repo" для публичных; fine‑grained: Repository permissions → Contents: Read and write, Metadata: Read; выбран нужный репозиторий).
+• SSO authorized — если репозиторий в организации, на странице токена нажмите "Enable SSO" → Authorize.
+• GH_REPO точно "owner/repo" и GH_BRANCH существует.
+• После изменения env выполните Redeploy в Vercel.`);
+      } else {
+        setStatus(`${baseMsg}
+Проверьте, что создан файл app/api/gh-upload/route.ts и заданы переменные GH_TOKEN/GH_REPO/GH_BRANCH.`);
       }
-      setDiag(`OK: ${res.status}. Ответ: ${payload ? JSON.stringify(payload) : text || '(пусто)'}
-API живой.`);
-    } catch (e: any) {
-      setDiag('Сетевая ошибка: ' + (e?.message || e));
+      return;
     }
-  };
-
-  const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const { name, value } = e.target; setForm(s=>({ ...s, [name]: value }));
-  };
-
-  const makeItem = (image: string, download?: string): Item => ({
-    id: `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
-    brand: form.brand.trim() || 'Custom',
-    model: form.model.trim() || 'Model',
-    title: form.title.trim() || 'Custom part',
-    subsystem: form.subsystem || 'interior',
-    image,
-    download,
-  });
-
-  const addManual = () => {
-    if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
     const img = form.imageUrl.trim() || IMG('No image');
     const dwn = form.downloadUrl.trim() || undefined;
     addLocalItem(makeItem(img, dwn));
@@ -236,15 +226,16 @@ API живой.`);
         </div>
         <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={agree} onChange={(e)=>setAgree(!!e.target.checked)} /> Я согласен с <Link className="underline" href="/?view=rules">Правилами</Link> и <Link className="underline" href="/?view=dmca">DMCA</Link>.</label>
         <div className="flex flex-wrap items-center gap-3">
-          <button type="button" onClick={uploadToGitHub} disabled={!agree || uploading} className={!agree||uploading?"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed":"px-4 py-2 rounded-xl bg-black text-white"}>{uploading? 'Загружаем…' : 'Загрузить на GitHub и добавить'}</button>
+          <button type="button" onClick={uploadToGitHub} disabled={!agree || uploading || !serverOk} className={!agree||uploading||!serverOk?\"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed":"px-4 py-2 rounded-xl bg-black text-white"}>{uploading? 'Загружаем…' : (serverOk ? 'Загрузить на GitHub и добавить' : 'API не настроен')}</button>
           <button type="button" onClick={addManual} disabled={!agree} className={!agree?"px-4 py-2 rounded-xl border bg-gray-200 text-gray-500 cursor-not-allowed":"px-4 py-2 rounded-xl border bg-white hover:bg-gray-100"}>Добавить без загрузки</button>
         </div>
         {status && <div className="text-sm text-gray-700 bg-gray-50 border rounded-xl p-3">{status}</div>}
 
       {/* Диагностика API */}
       <div className="bg-white border rounded-2xl p-6 grid gap-3">
-        <h2 className="text-lg font-semibold">Диагностика</h2>
-        <div className="text-xs text-gray-600">Endpoint: <code>{UPLOAD_ENDPOINT}</code></div>
+        $1
+        <p className="text-xs text-gray-600">Если при загрузке видите <code>401 Bad credentials</code> — это не баг сайта, а отклонение GitHub из‑за прав токена. Ниже есть кнопка проверки, но основное решается настройкой PAT:</p>
+        $2
         <div className="flex items-center gap-3">
           <button type="button" onClick={pingApi} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-100 text-sm">Проверить /api/gh-upload</button>
           <Link href="/api/gh-upload" className="text-sm underline" target="_blank">Открыть в новой вкладке</Link>
