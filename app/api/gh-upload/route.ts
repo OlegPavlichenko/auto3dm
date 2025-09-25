@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
         headers: {
         'Accept': 'application/vnd.github+json',
 		'User-Agent': 'auto3d-uploader',
-		'Authorization': `token ${opts.token}`,
+		'Authorization': `token ${GH_TOKEN}`,
         },
         body: JSON.stringify({
           message: `upload via api: ${path}`,
