@@ -163,14 +163,14 @@ function SubmitPage() {
 
 const uploadToGitHub = async () => {
   if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
-  if (!localGlbFile) { setStatus('Выберите GLB файл.'); return; }
+  if (!glbFile) { setStatus('Выберите GLB файл.'); return; }
 
   setUploading(true);
   setStatus('Загрузка на GitHub…');
 
   try {
     const fd = new FormData();
-    fd.append('file', localGlbFile, localGlbFile.name || 'model.glb');
+    fd.append('file', glbFile, glbFile.name || 'model.glb');
     fd.append('brand', form.brand || 'brand');
     fd.append('model', form.model || 'model');
 
@@ -197,7 +197,7 @@ const uploadToGitHub = async () => {
 
     const item = makeItem(url);
     addLocalItem(item);
-    setForm(s => ({ ...s, src: url, download: url, title: s.title || (localGlbFile?.name || 'GLB') }));
+    setForm(s => ({ ...s, src: url, download: url, title: s.title || (glbFile?.name || 'GLB') }));
     setStatus('Файл загружен на GitHub и добавлен в каталог.');
     setUploading(false);
   } catch (e: any) {
