@@ -169,10 +169,16 @@ function SubmitPage() {
       if (imgFile) fd.append('image', imgFile, imgFile.name || 'preview.png');
       fd.append('brand', form.brand || 'brand');
       fd.append('model', form.model || 'model');
-      const res = await fetch(UPLOAD_ENDPOINT, { method: 'POST', body: fd });
-      const data = await res.json().catch(()=> ({}));
-      setUploading(false);
-      if (!res.ok) { setStatus(`Ошибка загрузки: ${data?.error || res.statusText}`); return; }
+      const res = await fetch(endpoint, { method: 'POST', body: fd });
+let data: any = null;
+let text = '';
+try { text = await res.text(); data = JSON.parse(text); } catch { /* not json */ }
+setUploading(false);
+
+if (!res.ok || !data?.url) {
+  setStatus(`Ошибка загрузки: ${data?.error || text || res.statusText}`);
+  return;
+}
       const image = (data.imageUrl as string) || form.imageUrl.trim() || IMG('No image');
       const download = (data.url as string) || form.downloadUrl.trim() || undefined;
       addLocalItem(makeItem(image, download));
