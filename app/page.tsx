@@ -30,7 +30,9 @@ export type Item = {
 };
 
 // ========= Helpers =========
-const UPLOAD_ENDPOINT: string = (typeof process !== 'undefined' && (process as any)?.env?.NEXT_PUBLIC_UPLOAD_ENDPOINT) || "/api/gh-upload";
+// Клиентский эндпоинт для загрузки (можно переопределить через NEXT_PUBLIC_UPLOAD_ENDPOINT)
+const UPLOAD_ENDPOINT: string =
+  (typeof process !== 'undefined' && (process as any)?.env?.NEXT_PUBLIC_UPLOAD_ENDPOINT) || '/api/gh-upload';
 
 function slug(v: string): string {
   try {
