@@ -19,6 +19,10 @@ export async function POST(req: NextRequest) {
     const GH_TOKEN  = process.env.GH_TOKEN!;
     const GH_REPO   = process.env.GH_REPO!;    // e.g. "youruser/yourrepo"
     const GH_BRANCH = process.env.GH_BRANCH || 'main';
+	const token  = (process.env.GH_TOKEN  || '').trim();
+	const repo   = (process.env.GH_REPO   || '').trim();   // 'user/repo'
+	const branch = (process.env.GH_BRANCH || 'main').trim();
+
 
     if (!GH_TOKEN || !GH_REPO) {
       return NextResponse.json({ error: 'Missing GH_TOKEN or GH_REPO env' }, { status: 500 });
@@ -37,9 +41,9 @@ export async function POST(req: NextRequest) {
       const res = await fetch(`https://api.github.com/repos/${GH_REPO}/contents/${encodeURIComponent(path)}`, {
         method: 'PUT',
         headers: {
-          'Authorization': `Bearer ${GH_TOKEN}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/vnd.github+json'
+        'Accept': 'application/vnd.github+json',
+		'User-Agent': 'auto3d-uploader',
+		'Authorization': `token ${opts.token}`,
         },
         body: JSON.stringify({
           message: `upload via api: ${path}`,
