@@ -161,35 +161,50 @@ function SubmitPage() {
     setStatus('Добавлено локально в каталог.');
   };
 
-  const uploadToGitHub = async () => {
-    if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
-    if (!glbFile && !imgFile) { setStatus('Выберите хотя бы КАРТИНКУ (желательно) или файл для скачивания.'); return; }
-    try {
-      setUploading(true); setStatus('Загрузка на GitHub…');
-      const fd = new FormData();
-      if (glbFile) fd.append('file', glbFile, glbFile.name || 'model.glb');
-      if (imgFile) fd.append('image', imgFile, imgFile.name || 'preview.png');
-      fd.append('brand', form.brand || 'brand');
-      fd.append('model', form.model || 'model');
-      const res = await fetch(endpoint, { method: 'POST', body: fd });
-let data: any = null;
-let text = '';
-try { text = await res.text(); data = JSON.parse(text); } catch { /* not json */ }
-setUploading(false);
+const uploadToGitHub = async () => {
+  if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
+  if (!localGlbFile) { setStatus('Выберите GLB файл.'); return; }
 
-if (!res.ok || !data?.url) {
-  setStatus(`Ошибка загрузки: ${data?.error || text || res.statusText}`);
-  return;
-}
-      const image = (data.imageUrl as string) || form.imageUrl.trim() || IMG('No image');
-      const download = (data.url as string) || form.downloadUrl.trim() || undefined;
-      addLocalItem(makeItem(image, download));
-      setStatus('Файлы загружены на GitHub и карточка добавлена.');
-    } catch (e:any) {
+  setUploading(true);
+  setStatus('Загрузка на GitHub…');
+
+  try {
+    const fd = new FormData();
+    fd.append('file', localGlbFile, localGlbFile.name || 'model.glb');
+    fd.append('brand', form.brand || 'brand');
+    fd.append('model', form.model || 'model');
+
+    // ВАЖНО: всегда бьём кеш, и используем гарантированный UPLOAD_ENDPOINT
+    const res = await fetch(UPLOAD_ENDPOINT, { method: 'POST', body: fd, cache: 'no-store' });
+
+    // Пробуем прочитать как текст, потом JSON — чтобы увидеть реальные сообщения об ошибке
+    const text = await res.text();
+    let data: any = null;
+    try { data = JSON.parse(text); } catch { /* not json */ }
+
+    if (!res.ok) {
       setUploading(false);
-      setStatus('Ошибка: ' + (e?.message || e));
+      setStatus(`Ошибка загрузки: ${data?.error || text || res.statusText}`);
+      return;
     }
-  };
+
+    const url: string | undefined = data?.url;
+    if (!url) {
+      setUploading(false);
+      setStatus('Сервер не вернул ссылку url.');
+      return;
+    }
+
+    const item = makeItem(url);
+    addLocalItem(item);
+    setForm(s => ({ ...s, src: url, download: url, title: s.title || (localGlbFile?.name || 'GLB') }));
+    setStatus('Файл загружен на GitHub и добавлен в каталог.');
+    setUploading(false);
+  } catch (e: any) {
+    setUploading(false);
+    setStatus('Ошибка: ' + (e?.message || e));
+  }
+};
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
