@@ -30,9 +30,7 @@ export type Item = {
 };
 
 // ========= Helpers =========
-// Клиентский эндпоинт для загрузки (можно переопределить через NEXT_PUBLIC_UPLOAD_ENDPOINT)
-const UPLOAD_ENDPOINT: string =
-  (typeof process !== 'undefined' && (process as any)?.env?.NEXT_PUBLIC_UPLOAD_ENDPOINT) || '/api/gh-upload';
+const UPLOAD_ENDPOINT: string = (typeof process !== 'undefined' && (process as any)?.env?.NEXT_PUBLIC_UPLOAD_ENDPOINT) || "/api/gh-upload";
 
 function slug(v: string): string {
   try {
@@ -138,6 +136,27 @@ function SubmitPage() {
   const [glbFile, setGlbFile] = useState<File|null>(null);
   const [imgFile, setImgFile] = useState<File|null>(null);
   const [uploading, setUploading] = useState(false);
+  const [diag, setDiag] = useState<string>('');
+
+  const pingApi = async () => {
+    try {
+      setDiag('Пробую GET к API…');
+      const url = `${UPLOAD_ENDPOINT}${UPLOAD_ENDPOINT.includes('?') ? '&' : '?'}ping=1`;
+      const res = await fetch(url, { method: 'GET', headers: { 'x-debug': '1' } });
+      const text = await res.text();
+      let payload: any = undefined;
+      try { payload = JSON.parse(text); } catch {}
+      if (!res.ok) {
+        setDiag(`GET ${url} → ${res.status} ${res.statusText}. Тело: ${payload ? JSON.stringify(payload) : text || '(пусто)'}
+Если это 404 — маршрут /api/gh-upload не найден. Создайте файл app/api/gh-upload/route.ts и задеплойте.`);
+        return;
+      }
+      setDiag(`OK: ${res.status}. Ответ: ${payload ? JSON.stringify(payload) : text || '(пусто)'}
+API живой.`);
+    } catch (e: any) {
+      setDiag('Сетевая ошибка: ' + (e?.message || e));
+    }
+  };
 
   const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target; setForm(s=>({ ...s, [name]: value }));
@@ -161,50 +180,34 @@ function SubmitPage() {
     setStatus('Добавлено локально в каталог.');
   };
 
-const uploadToGitHub = async () => {
-  if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
-  if (!glbFile) { setStatus('Выберите GLB файл.'); return; }
-
-  setUploading(true);
-  setStatus('Загрузка на GitHub…');
-
-  try {
-    const fd = new FormData();
-    fd.append('file', glbFile, glbFile.name || 'model.glb');
-    fd.append('brand', form.brand || 'brand');
-    fd.append('model', form.model || 'model');
-
-    // ВАЖНО: всегда бьём кеш, и используем гарантированный UPLOAD_ENDPOINT
-    const res = await fetch(UPLOAD_ENDPOINT, { method: 'POST', body: fd, cache: 'no-store' });
-
-    // Пробуем прочитать как текст, потом JSON — чтобы увидеть реальные сообщения об ошибке
-    const text = await res.text();
-    let data: any = null;
-    try { data = JSON.parse(text); } catch { /* not json */ }
-
-    if (!res.ok) {
+  const uploadToGitHub = async () => {
+    if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
+    if (!glbFile && !imgFile) { setStatus('Выберите хотя бы КАРТИНКУ (желательно) или файл для скачивания.'); return; }
+    try {
+      setUploading(true); setStatus('Загрузка на GitHub…');
+      const fd = new FormData();
+      if (glbFile) fd.append('file', glbFile, glbFile.name || 'model.glb');
+      if (imgFile) fd.append('image', imgFile, imgFile.name || 'preview.png');
+      fd.append('brand', form.brand || 'brand');
+      fd.append('model', form.model || 'model');
+      const res = await fetch(UPLOAD_ENDPOINT, { method: 'POST', body: fd });
+      const raw = await res.text();
+      let data: any = undefined; try { data = JSON.parse(raw); } catch {}
       setUploading(false);
-      setStatus(`Ошибка загрузки: ${data?.error || text || res.statusText}`);
-      return;
-    }
-
-    const url: string | undefined = data?.url;
-    if (!url) {
+      if (!res.ok) {
+        setStatus(`Ошибка загрузки: HTTP ${res.status} ${res.statusText}. Ответ: ${data?.error || raw || '(пусто)'}
+Проверьте, что создан файл app/api/gh-upload/route.ts и заданы переменные GH_TOKEN/GH_REPO/GH_BRANCH.`);
+        return;
+      }
+      const image = (data?.imageUrl as string) || form.imageUrl.trim() || IMG('No image');
+      const download = (data?.url as string) || form.downloadUrl.trim() || undefined;
+      addLocalItem(makeItem(image, download));
+      setStatus('Файлы загружены на GitHub и карточка добавлена.');
+    } catch (e:any) {
       setUploading(false);
-      setStatus('Сервер не вернул ссылку url.');
-      return;
+      setStatus('Ошибка сети/браузера: ' + (e?.message || e));
     }
-
-    const item = makeItem(url);
-    addLocalItem(item);
-    setForm(s => ({ ...s, src: url, download: url, title: s.title || (glbFile?.name || 'GLB') }));
-    setStatus('Файл загружен на GitHub и добавлен в каталог.');
-    setUploading(false);
-  } catch (e: any) {
-    setUploading(false);
-    setStatus('Ошибка: ' + (e?.message || e));
-  }
-};
+  };
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
@@ -237,6 +240,17 @@ const uploadToGitHub = async () => {
           <button type="button" onClick={addManual} disabled={!agree} className={!agree?"px-4 py-2 rounded-xl border bg-gray-200 text-gray-500 cursor-not-allowed":"px-4 py-2 rounded-xl border bg-white hover:bg-gray-100"}>Добавить без загрузки</button>
         </div>
         {status && <div className="text-sm text-gray-700 bg-gray-50 border rounded-xl p-3">{status}</div>}
+
+      {/* Диагностика API */}
+      <div className="bg-white border rounded-2xl p-6 grid gap-3">
+        <h2 className="text-lg font-semibold">Диагностика</h2>
+        <div className="text-xs text-gray-600">Endpoint: <code>{UPLOAD_ENDPOINT}</code></div>
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={pingApi} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-100 text-sm">Проверить /api/gh-upload</button>
+          <Link href="/api/gh-upload" className="text-sm underline" target="_blank">Открыть в новой вкладке</Link>
+        </div>
+        {diag && <pre className="text-xs bg-gray-50 border rounded-xl p-3 whitespace-pre-wrap break-words">{diag}</pre>}
+      </div>
       </div>
     </div>
   );
