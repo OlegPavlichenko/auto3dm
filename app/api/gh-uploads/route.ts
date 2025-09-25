@@ -1,6 +1,9 @@
 // app/api/gh-upload/route.ts
 import { NextResponse } from 'next/server';
 
+export const runtime = 'nodejs';       // нужен Buffer
+export const dynamic = 'force-dynamic';
+
 const GH_TOKEN  = process.env.GH_TOKEN!;
 const GH_REPO   = process.env.GH_REPO!;    // "user/repo"
 const GH_BRANCH = process.env.GH_BRANCH || 'main';
@@ -13,8 +16,13 @@ function slug(v: string) {
 }
 const safeName = (n: string) => (n || 'file.bin').replace(/[^a-zA-Z0-9_.-]/g,'_');
 
+// ✨ ВАЖНО: кодируем КАЖДЫЙ сегмент пути, а не весь путь целиком!
+function encodePath(p: string) {
+  return p.split('/').map(encodeURIComponent).join('/');
+}
+
 async function putContent(path: string, content: Buffer, message: string) {
-  const url = `https://api.github.com/repos/${GH_REPO}/contents/${encodeURIComponent(path)}`;
+  const url = `https://api.github.com/repos/${GH_REPO}/contents/${encodePath(path)}`;
   const body = {
     message,
     content: content.toString('base64'),
@@ -31,11 +39,15 @@ async function putContent(path: string, content: Buffer, message: string) {
     },
     body: JSON.stringify(body),
   });
-  const data = await res.json();
+
+  const text = await res.text();
+  let data: any = {};
+  try { data = JSON.parse(text); } catch {}
+
   if (!res.ok) {
-    throw new Error(`${res.status} ${res.statusText} — ${data?.message || 'upload failed'}`);
+    const msg = data?.message || text || `${res.status} ${res.statusText}`;
+    throw new Error(msg);
   }
-  // commit SHA пригодится для immutable CDN URL
   const commitSha = data?.commit?.sha as string | undefined;
   return { commitSha };
 }
@@ -47,8 +59,8 @@ export async function POST(req: Request) {
     }
 
     const form = await req.formData();
-    const file = form.get('file') as File | null;   // модель/архив — опционально
-    const image = form.get('image') as File | null; // превью — опционально, но желательно
+    const file  = form.get('file')  as File | null;   // GLB (необязательно)
+    const image = form.get('image') as File | null;   // превью (необязательно)
     const brand = String(form.get('brand') || 'brand');
     const model = String(form.get('model') || 'model');
 
@@ -56,9 +68,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Nothing to upload (pick image and/or file).' }, { status: 400 });
     }
 
+    const ts = Date.now();
     const brandSlug = slug(brand);
     const modelSlug = slug(model);
-    const ts = Date.now();
 
     let fileUrl: string | undefined;
     let imageUrl: string | undefined;
@@ -66,10 +78,9 @@ export async function POST(req: Request) {
 
     if (file) {
       const buf = Buffer.from(await file.arrayBuffer());
-      const path = `${brandSlug}/${modelSlug}/${ts}-${safeName(file.name || 'file.bin')}`;
+      const path = `${brandSlug}/${modelSlug}/${ts}-${safeName(file.name || 'model.glb')}`;
       const r = await putContent(path, buf, `upload file ${path}`);
       commitSha = r.commitSha || commitSha;
-      // jsDelivr immutable по SHA коммита
       fileUrl = `https://cdn.jsdelivr.net/gh/${GH_REPO}@${commitSha || GH_BRANCH}/${path}`;
     }
 
