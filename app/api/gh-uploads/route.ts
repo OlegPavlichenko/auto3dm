@@ -1,8 +1,16 @@
-export const runtime = 'nodejs'; // нужен Node для Buffer/HTTP
+// app/api/gh-upload/route.ts
+import { NextRequest, NextResponse } from 'next/server';
 
-function slug(s: string) {
+export const runtime = 'nodejs'; // требуется файловый доступ/Buffer
+
+const GH_TOKEN  = process.env.GH_TOKEN!;
+const GH_REPO   = process.env.GH_REPO!;   // "user/repo"
+const GH_BRANCH = process.env.GH_BRANCH || 'main';
+
+function slug(v: string): string {
   try {
-    return (s || '')
+    return (v || '')
+      .toString()
       .normalize('NFKD')
       .replace(/[\u0300-\u036f]/g, '')
       .replace(/[^a-zA-Z0-9]+/g, '-')
@@ -10,64 +18,69 @@ function slug(s: string) {
       .toLowerCase();
   } catch { return 'x'; }
 }
-
-export async function GET() {
-  // health-check: можно открыть /api/gh-upload в браузере, чтобы убедиться, что эндпоинт жив
-  return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
+function safeFileName(name: string): string {
+  return (name || 'file.bin').replace(/[^a-zA-Z0-9_.-]/g, '_');
+}
+async function putToGitHub(path: string, bytes: Uint8Array, message: string) {
+  const url = `https://api.github.com/repos/${GH_REPO}/contents/${encodeURIComponent(path)}`;
+  const body = {
+    message,
+    content: Buffer.from(bytes).toString('base64'),
+    branch: GH_BRANCH,
+  };
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      'Authorization': `Bearer ${GH_TOKEN}`,
+      'Accept': 'application/vnd.github+json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(()=> '');
+    throw new Error(`GitHub PUT ${res.status}: ${t}`);
+  }
+  const data = await res.json();
+  // предпочитаем raw.githubusercontent для скачивания; для CDN можно jsDelivr
+  const rawUrl = `https://raw.githubusercontent.com/${GH_REPO}/${GH_BRANCH}/${path}`;
+  const cdnUrl = `https://cdn.jsdelivr.net/gh/${GH_REPO}@${GH_BRANCH}/${path}`;
+  return { rawUrl, cdnUrl, apiResponse: data };
 }
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
-    const repo = process.env.GH_REPO;       // "user/repo"
-    const branch = process.env.GH_BRANCH || 'main';
-    const token = process.env.GH_TOKEN;     // GitHub PAT с правом записи contents
-    const dir = process.env.GH_DIR || 'models'; // корневая папка в репо
-
-    if (!repo || !token) {
-      return new Response(JSON.stringify({ error: 'Missing env GH_REPO or GH_TOKEN' }), { status: 500 });
+    if (!GH_TOKEN || !GH_REPO) {
+      return NextResponse.json({ error: 'Server not configured (GH_TOKEN/GH_REPO)' }, { status: 500 });
     }
 
     const form = await req.formData();
+    const brand = slug(String(form.get('brand') || 'brand'));
+    const model = slug(String(form.get('model') || 'model'));
+
+    const out: any = {};
+    const now = Date.now();
+
+    // image (опционально)
+    const image = form.get('image') as File | null;
+    if (image) {
+      const imgBytes = new Uint8Array(await image.arrayBuffer());
+      const imgPath  = `uploads/${brand}/${model}/${now}-preview-${safeFileName(image.name)}`;
+      const imgRes   = await putToGitHub(imgPath, imgBytes, `Upload preview ${brand}/${model}`);
+      out.imageUrl   = imgRes.cdnUrl; // или rawUrl
+    }
+
+    // file (опционально)
     const file = form.get('file') as File | null;
-    const brand = String(form.get('brand') || 'brand');
-    const model = String(form.get('model') || 'model');
-
-    if (!file) {
-      return new Response(JSON.stringify({ error: 'file field is required' }), { status: 400 });
+    if (file) {
+      const fileBytes = new Uint8Array(await file.arrayBuffer());
+      const filePath  = `uploads/${brand}/${model}/${now}-${safeFileName(file.name)}`;
+      const fileRes   = await putToGitHub(filePath, fileBytes, `Upload file ${brand}/${model}`);
+      out.url        = fileRes.cdnUrl; // или rawUrl
     }
 
-    const arrayBuf = await file.arrayBuffer();
-    const base64 = Buffer.from(arrayBuf).toString('base64');
-
-    const baseName = (file.name || 'model.glb').replace(/[^a-zA-Z0-9_.-]/g, '_');
-    const relPath = `${dir}/${slug(brand)}/${slug(model)}/${Date.now()}-${baseName}`;
-
-    const apiUrl = `https://api.github.com/repos/${repo}/contents/${encodeURIComponent(relPath)}`;
-
-    const gh = await fetch(apiUrl, {
-      method: 'PUT',
-      headers: {
-        Authorization: `token ${token}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'auto3d-uploader'
-      },
-      body: JSON.stringify({
-        message: `Upload ${baseName}`,
-        content: base64,
-        branch
-      })
-    });
-
-    const json = await gh.json();
-
-    if (!gh.ok) {
-      return new Response(JSON.stringify({ error: json?.message || 'GitHub upload failed', details: json }), { status: 500 });
-    }
-
-    // Публичная CDN-ссылка (репо должен быть PUBLIC)
-    const cdn = `https://cdn.jsdelivr.net/gh/${repo}@${branch}/${relPath}`;
-    return Response.json({ url: cdn, path: relPath });
+    return NextResponse.json(out);
   } catch (e: any) {
-    return new Response(JSON.stringify({ error: e?.message || String(e) }), { status: 500 });
+    return NextResponse.json({ error: e?.message || String(e) }, { status: 500 });
   }
 }
