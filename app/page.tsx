@@ -445,3 +445,109 @@ export default function AppRouter() {
   else if (view === 'dmca') page = <DmcaPage />;
   return <AppShell>{page}</AppShell>;
 }
+
+
+// =============================
+// File: app/api/gh-upload/route.ts
+// Node runtime Route Handler for uploading GLB to GitHub and returning jsDelivr URL
+// =============================
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+import { NextResponse } from 'next/server';
+
+function slug(v: string): string {
+  try {
+    return (v || '')
+      .toString()
+      .normalize('NFKD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-zA-Z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase();
+  } catch { return 'x'; }
+}
+function safeFileName(name: string): string {
+  return (name || 'model.glb').replace(/[^a-zA-Z0-9_.-]/g, '_');
+}
+
+// GET /api/gh-upload?ping=1 → quick health/env check (does NOT leak secrets)
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  if (searchParams.get('ping') === '1') {
+    const GH_TOKEN  = process.env.GH_TOKEN;
+    const GH_REPO   = process.env.GH_REPO;
+    const GH_BRANCH = process.env.GH_BRANCH || 'main';
+    return NextResponse.json(
+      {
+        ok: true,
+        env: {
+          GH_TOKEN: !!GH_TOKEN,           // true/false only
+          GH_REPO: GH_REPO || '(empty)',
+          GH_BRANCH,
+        },
+      },
+      { headers: { 'Cache-Control': 'no-store' } },
+    );
+  }
+  return NextResponse.json({ ok: true });
+}
+
+// POST multipart/form-data { file, brand, model } → upload to GitHub
+export async function POST(req: Request) {
+  try {
+    const GH_TOKEN  = process.env.GH_TOKEN;
+    const GH_REPO   = process.env.GH_REPO;
+    const GH_BRANCH = process.env.GH_BRANCH || 'main';
+
+    if (!GH_TOKEN || !GH_REPO) {
+      return NextResponse.json({ error: 'Missing GH_TOKEN or GH_REPO env' }, { status: 500 });
+    }
+
+    const form = await req.formData();
+    const file = form.get('file') as File | null;
+    const brand = String(form.get('brand') || 'brand');
+    const model = String(form.get('model') || 'model');
+
+    if (!file) {
+      return NextResponse.json({ error: 'file is required' }, { status: 400 });
+    }
+
+    const relPath = `${slug(brand)}/${slug(model)}/${Date.now()}-${safeFileName((file as any).name || 'model.glb')}`;
+
+    const [owner, repo] = GH_REPO.split('/');
+    if (!owner || !repo) {
+      return NextResponse.json({ error: `GH_REPO should be in the form owner/repo, got: ${GH_REPO}` }, { status: 500 });
+    }
+
+    const buf = Buffer.from(await file.arrayBuffer());
+    const base64 = buf.toString('base64');
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(relPath)}`;
+
+    const ghRes = await fetch(apiUrl, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${GH_TOKEN}`,
+        'Accept': 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({
+        message: `upload ${relPath}`,
+        branch: GH_BRANCH,
+        content: base64,
+      }),
+    });
+
+    const text = await ghRes.text();
+    if (!ghRes.ok) {
+      return NextResponse.json({ error: `GitHub PUT ${ghRes.status}: ${text}` }, { status: ghRes.status });
+    }
+
+    const cdnUrl = `https://cdn.jsdelivr.net/gh/${owner}/${repo}@${GH_BRANCH}/${relPath}`;
+    return NextResponse.json({ ok: true, url: cdnUrl, path: relPath });
+  } catch (e: any) {
+    return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
+  }
+}
