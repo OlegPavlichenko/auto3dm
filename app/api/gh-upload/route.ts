@@ -17,6 +17,7 @@ function badEnv() {
   return !GH_TOKEN || !GH_REPO;
 }
 
+
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   if (url.searchParams.has("ping")) {
