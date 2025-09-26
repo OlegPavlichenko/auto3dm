@@ -1,129 +1,174 @@
 // app/api/gh-upload/route.ts
-import { NextRequest, NextResponse } from "next/server";
+export const runtime = 'nodejs';            // важно: не edge
+export const dynamic = 'force-dynamic';     // чтобы не кешировалось
 
-export const runtime = "nodejs";         // ВАЖНО: не edge, чтобы env + Buffer работали
-export const dynamic = "force-dynamic";  // чтобы не кэшировался ping и разные аплоады
+type Json = Record<string, any>;
 
-const GH_TOKEN  = (process.env.GH_TOKEN  || '').trim();
-const GH_REPO   = (process.env.GH_REPO   || '').trim();
-const GH_BRANCH = (process.env.GH_BRANCH || 'main').trim();
+const GH_TOKEN = process.env.GH_TOKEN || '';
+const GH_REPO  = process.env.GH_REPO  || '';
+const GH_BRANCH = process.env.GH_BRANCH || 'main';
 
-function authHeader(token: string) {
-  // fine-grained токены начинаются с "github_pat_", для них надёжнее Bearer
-  return token.startsWith("github_pat_") ? `Bearer ${token}` : `token ${token}`;
+const authScheme = GH_TOKEN.startsWith('github_pat_') ? 'Bearer' : 'token'; // fine-grained vs classic
+
+function json(data: Json, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
 }
 
-function badEnv() {
-  return !GH_TOKEN || !GH_REPO;
+function b64(buf: ArrayBuffer) {
+  // Node runtime гарантирован → Buffer доступен
+  return Buffer.from(buf).toString('base64');
 }
 
-
-export async function GET(req: NextRequest) {
-  const url = new URL(req.url);
-  if (url.searchParams.has("ping")) {
-    if (badEnv()) {
-      return NextResponse.json(
-        { ok: false, error: "Missing GH_TOKEN or GH_REPO env" },
-        { status: 500 }
-      );
-    }
-    const hdrs = {
-      Authorization: authHeader(GH_TOKEN),
-      "User-Agent": "auto3dm",
-      Accept: "application/vnd.github+json",
-    };
-
-    const whoResp = await fetch("https://api.github.com/user", { headers: hdrs });
-    const who = await whoResp.json().catch(() => ({}));
-
-    const repoResp = await fetch(`https://api.github.com/repos/${GH_REPO}`, { headers: hdrs });
-    const repo = await repoResp.json().catch(() => ({}));
-
-    return NextResponse.json({
-      ok: whoResp.ok && repoResp.ok,
-      whoami: who?.login || null,
-      repo: repo?.full_name || null,
-      permissions: repo?.permissions || null,
-      status: { who: whoResp.status, repo: repoResp.status },
-      branch: GH_BRANCH,
-    });
+// ---- Diagnostics: GET /api/gh-upload/ping
+export async function GET() {
+  if (!GH_TOKEN || !GH_REPO) {
+    return json(
+      { ok: false, error: 'Missing GH_TOKEN or GH_REPO env' },
+      500
+    );
   }
-  return NextResponse.json({ ok: true });
+
+  // 1) whoami
+  const who = await fetch('https://api.github.com/user', {
+    headers: { Authorization: `${authScheme} ${GH_TOKEN}` },
+    cache: 'no-store',
+  });
+
+  // 2) repo info
+  const repo = await fetch(`https://api.github.com/repos/${GH_REPO}`, {
+    headers: { Authorization: `${authScheme} ${GH_TOKEN}` },
+    cache: 'no-store',
+  });
+
+  let perm: any = null;
+  try { perm = (await repo.json()).permissions || null; } catch {}
+
+  return json({
+    ok: who.status === 200 && repo.status === 200,
+    env: { repo: GH_REPO, branch: GH_BRANCH },
+    status: { who: who.status, repo: repo.status, perm },
+  });
 }
 
-export async function POST(req: NextRequest) {
+// ---- Upload: POST /api/gh-upload
+// FormData: file, brand, model
+export async function POST(req: Request) {
+  if (!GH_TOKEN || !GH_REPO) {
+    return json({ ok: false, error: 'Missing GH_TOKEN or GH_REPO env' }, 500);
+  }
+
   try {
-    if (badEnv()) {
-      return NextResponse.json(
-        { error: "Missing GH_TOKEN or GH_REPO env" },
-        { status: 500 }
-      );
-    }
-
     const form = await req.formData();
-    const file  = form.get("file") as File | null;
-    const brand = String(form.get("brand") || "brand");
-    const model = String(form.get("model") || "model");
+    const file = form.get('file') as File | null;
+    const brand = String(form.get('brand') || 'brand');
+    const model = String(form.get('model') || 'model');
 
-    if (!file) {
-      return NextResponse.json({ error: "No file" }, { status: 400 });
-    }
-
-    // ограничения и подготовка
-    const sizeMb = file.size / (1024 * 1024);
-    if (sizeMb > 75) {
-      return NextResponse.json(
-        { error: `File too large: ${sizeMb.toFixed(1)} MB (> 75 MB)` },
-        { status: 400 }
-      );
-    }
-
-    const buf = Buffer.from(await file.arrayBuffer());
-    const contentB64 = buf.toString("base64");
+    if (!file) return json({ ok: false, error: 'No file' }, 400);
 
     const slug = (v: string) =>
-      (v || "")
-        .toLowerCase()
-        .normalize("NFKD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "") || "x";
+      (v || '')
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .toLowerCase() || 'x';
 
-    const safeFileName = (name: string) =>
-      (name || "model.glb").replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const safeName = (name: string) =>
+      (name || 'file.glb').replace(/[^a-zA-Z0-9_.-]/g, '_');
 
-    const path =
-      `uploads/${slug(brand)}/${slug(model)}/${Date.now()}-${safeFileName(file.name)}`;
+    const path = `${slug(brand)}/${slug(model)}/${Date.now()}-${safeName(file.name)}`.replace(/^\/+/, '');
 
-    // GitHub Contents API
-    const ghUrl = `https://api.github.com/repos/${GH_REPO}/contents/${encodeURIComponent(path)}`;
-    const resp = await fetch(ghUrl, {
-      method: "PUT",
+    // 1) узнаем latest sha ветки
+    const refRes = await fetch(`https://api.github.com/repos/${GH_REPO}/git/refs/heads/${GH_BRANCH}`, {
+      headers: { Authorization: `${authScheme} ${GH_TOKEN}` },
+      cache: 'no-store',
+    });
+    if (!refRes.ok) {
+      const text = await refRes.text();
+      return json({ ok: false, error: `Cannot read branch ${GH_BRANCH}`, details: text }, 500);
+    }
+    const ref = await refRes.json();
+    const baseSha = ref.object?.sha;
+
+    // 2) создаём blob из файла
+    const ab = await file.arrayBuffer();
+    const blobRes = await fetch(`https://api.github.com/repos/${GH_REPO}/git/blobs`, {
+      method: 'POST',
       headers: {
-        Authorization: authHeader(GH_TOKEN),
-        "User-Agent": "auto3dm",
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
+        Authorization: `${authScheme} ${GH_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ content: b64(ab), encoding: 'base64' }),
+    });
+    if (!blobRes.ok) {
+      return json({ ok: false, error: 'blob create failed', details: await blobRes.text() }, 500);
+    }
+    const blob = await blobRes.json();
+
+    // 3) получаем дерево текущего коммита
+    const commitRes = await fetch(`https://api.github.com/repos/${GH_REPO}/git/commits/${baseSha}`, {
+      headers: { Authorization: `${authScheme} ${GH_TOKEN}` },
+    });
+    if (!commitRes.ok) {
+      return json({ ok: false, error: 'read base commit failed', details: await commitRes.text() }, 500);
+    }
+    const commit = await commitRes.json();
+
+    // 4) создаём новое дерево с нашим файлом
+    const treeRes = await fetch(`https://api.github.com/repos/${GH_REPO}/git/trees`, {
+      method: 'POST',
+      headers: {
+        Authorization: `${authScheme} ${GH_TOKEN}`,
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        message: `upload ${path}`,
-        content: contentB64,
-        branch: GH_BRANCH,
+        base_tree: commit.tree.sha,
+        tree: [{ path, mode: '100644', type: 'blob', sha: blob.sha }],
       }),
     });
+    if (!treeRes.ok) {
+      return json({ ok: false, error: 'tree create failed', details: await treeRes.text() }, 500);
+    }
+    const tree = await treeRes.json();
 
-    const json = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      return NextResponse.json(
-        { error: `GitHub PUT ${resp.status}: ${json?.message || resp.statusText}`, details: json },
-        { status: 500 }
-      );
+    // 5) коммит
+    const newCommitRes = await fetch(`https://api.github.com/repos/${GH_REPO}/git/commits`, {
+      method: 'POST',
+      headers: {
+        Authorization: `${authScheme} ${GH_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        message: `auto3d: add ${path}`,
+        tree: tree.sha,
+        parents: [baseSha],
+      }),
+    });
+    if (!newCommitRes.ok) {
+      return json({ ok: false, error: 'commit create failed', details: await newCommitRes.text() }, 500);
+    }
+    const newCommit = await newCommitRes.json();
+
+    // 6) двигаем ветку на новый коммит
+    const updateRefRes = await fetch(`https://api.github.com/repos/${GH_REPO}/git/refs/heads/${GH_BRANCH}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `${authScheme} ${GH_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ sha: newCommit.sha, force: false }),
+    });
+    if (!updateRefRes.ok) {
+      return json({ ok: false, error: 'move ref failed', details: await updateRefRes.text() }, 500);
     }
 
-    // готовая CDN-ссылка
-    const url = `https://cdn.jsdelivr.net/gh/${GH_REPO}@${GH_BRANCH}/${path}`;
-    return NextResponse.json({ ok: true, url, path, sha: json?.content?.sha || null });
+    // CDN (jsDelivr)
+    const cdn = `https://cdn.jsdelivr.net/gh/${GH_REPO}@${GH_BRANCH}/${encodeURI(path)}`;
+    return json({ ok: true, url: cdn, path, branch: GH_BRANCH });
   } catch (e: any) {
-    return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
+    return json({ ok: false, error: e?.message || String(e) }, 500);
   }
 }
