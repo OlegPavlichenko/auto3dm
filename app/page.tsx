@@ -551,3 +551,135 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
   }
 }
+
+
+// ======================
+// app/api/gh-upload/route.ts
+// Server route for uploading GLB files to GitHub via PAT
+// ======================
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+// Small helpers
+function slug(v: string): string {
+  try {
+    return (v || '')
+      .toString()
+      .normalize('NFKD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-zA-Z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase();
+  } catch { return 'x'; }
+}
+function safeFileName(name: string): string {
+  return (name || 'model.glb').replace(/[^a-zA-Z0-9_.-]/g, '_');
+}
+
+function env() {
+  const GH_TOKEN  = (process.env.GH_TOKEN  || '').trim();
+  const GH_REPO   = (process.env.GH_REPO   || '').trim();
+  const GH_BRANCH = (process.env.GH_BRANCH || 'main').trim();
+  return { GH_TOKEN, GH_REPO, GH_BRANCH };
+}
+
+async function ghJson(url: string, token: string, init: RequestInit = {}) {
+  const res = await fetch(url, {
+    ...init,
+    headers: {
+      'Authorization': `token ${token}`,
+      'Accept': 'application/vnd.github+json',
+      ...(init.headers || {}),
+    },
+    cache: 'no-store',
+  });
+  const text = await res.text();
+  let json: any = null;
+  try { json = text ? JSON.parse(text) : null; } catch { /* keep text */ }
+  return { res, json, text };
+}
+
+export async function GET(request: Request) {
+  const { GH_TOKEN, GH_REPO, GH_BRANCH } = env();
+  const { searchParams } = new URL(request.url);
+  if (searchParams.get('ping') !== '1') {
+    return new Response('OK', { status: 200 });
+  }
+
+  // Basic env presence
+  const present = {
+    GH_TOKEN: !!GH_TOKEN,
+    GH_REPO,
+    GH_BRANCH,
+    VERCEL_ENV: process.env.VERCEL_ENV || null,
+  };
+
+  // Optional: check GitHub whoami + repo access to help debug
+  let who = { ok: false as boolean, status: 0 as number };
+  let repo = { ok: false as boolean, status: 0 as number };
+  if (GH_TOKEN) {
+    try {
+      const r1 = await fetch('https://api.github.com/user', { headers: { Authorization: `token ${GH_TOKEN}` }, cache: 'no-store' });
+      who = { ok: r1.ok, status: r1.status };
+    } catch { /* ignore */ }
+  }
+  if (GH_TOKEN && GH_REPO) {
+    try {
+      const r2 = await fetch(`https://api.github.com/repos/${GH_REPO}`, { headers: { Authorization: `token ${GH_TOKEN}` }, cache: 'no-store' });
+      repo = { ok: r2.ok, status: r2.status };
+    } catch { /* ignore */ }
+  }
+
+  const ok = !!GH_TOKEN && !!GH_REPO;
+  const body = { ok, env: present, status: { who, repo } };
+  return new Response(JSON.stringify(body, null, 2), { status: ok ? 200 : 500, headers: { 'content-type': 'application/json' } });
+}
+
+export async function POST(request: Request) {
+  try {
+    const { GH_TOKEN, GH_REPO, GH_BRANCH } = env();
+    if (!GH_TOKEN || !GH_REPO) {
+      return new Response(JSON.stringify({ ok: false, error: 'Missing GH_TOKEN or GH_REPO env' }, null, 2), { status: 500, headers: { 'content-type': 'application/json' } });
+    }
+
+    const form = await request.formData();
+    const file = form.get('file');
+    const brand = String(form.get('brand') || 'brand');
+    const model = String(form.get('model') || 'model');
+    if (!(file instanceof File)) {
+      return new Response(JSON.stringify({ ok: false, error: 'No file field' }), { status: 400, headers: { 'content-type': 'application/json' } });
+    }
+
+    const contentArrayBuffer = await file.arrayBuffer();
+    const contentB64 = Buffer.from(contentArrayBuffer).toString('base64');
+
+    const path = `${slug(brand)}/${slug(model)}/${Date.now()}-${safeFileName(file.name || 'model.glb')}`;
+    const [owner, repo] = GH_REPO.split('/');
+    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`;
+
+    const message = `upload: ${path}`;
+    const putBody = {
+      message,
+      content: contentB64,
+      branch: GH_BRANCH,
+    };
+
+    const put = await ghJson(url, GH_TOKEN, {
+      method: 'PUT',
+      body: JSON.stringify(putBody),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    if (!put.res.ok) {
+      const text = put.text || JSON.stringify(put.json);
+      return new Response(JSON.stringify({ ok: false, error: `GitHub PUT ${put.res.status}: ${put.res.statusText}`, detail: text }), { status: put.res.status || 500, headers: { 'content-type': 'application/json' } });
+    }
+
+    // Compose a CDN URL via jsDelivr (available soon after commit)
+    const cdn = `https://cdn.jsdelivr.net/gh/${GH_REPO}@${GH_BRANCH}/${path}`;
+    return new Response(JSON.stringify({ ok: true, url: cdn, path, branch: GH_BRANCH }), { status: 200, headers: { 'content-type': 'application/json' } });
+  } catch (e: any) {
+    return new Response(JSON.stringify({ ok: false, error: String(e?.message || e) }), { status: 500, headers: { 'content-type': 'application/json' } });
+  }
+}
