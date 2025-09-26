@@ -4,9 +4,9 @@ import { NextRequest, NextResponse } from "next/server";
 export const runtime = "nodejs";         // ВАЖНО: не edge, чтобы env + Buffer работали
 export const dynamic = "force-dynamic";  // чтобы не кэшировался ping и разные аплоады
 
-const GH_TOKEN  = process.env.GH_TOKEN || "";
-const GH_REPO   = process.env.GH_REPO  || ""; // напр. "OlegPavlichenko/auto3dm"
-const GH_BRANCH = process.env.GH_BRANCH || "main";
+const GH_TOKEN  = (process.env.GH_TOKEN  || '').trim();
+const GH_REPO   = (process.env.GH_REPO   || '').trim();
+const GH_BRANCH = (process.env.GH_BRANCH || 'main').trim();
 
 function authHeader(token: string) {
   // fine-grained токены начинаются с "github_pat_", для них надёжнее Bearer
