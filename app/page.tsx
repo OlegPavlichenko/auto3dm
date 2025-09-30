@@ -145,7 +145,7 @@ function SubmitPage() {
     if (!isImage) { setStatus('Сейчас принимаются только изображения (png/jpg/webp).'); return; }
 	// В uploadToGitHub, до setUploading(true):
 const MAX_MB = 4.2; // держим чуть ниже 4.5MB лимита
-const sizeMb = localGlbFile.size / (1024 * 1024);
+const sizeMb = glbfile.size / (1024 * 1024);
 if (sizeMb > MAX_MB) {
   setStatus(`Файл ${sizeMb.toFixed(1)} MB > лимита ~${MAX_MB} MB для Vercel функций.
 Сожмите модель (gltfpack): npx gltfpack -i in.glb -o out.glb -cc -tc`);
