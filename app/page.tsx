@@ -183,97 +183,9 @@ function SubmitPage() {
   const [glbFile, setGlbFile] = useState<File | null>(null);
   const [imgFile, setImgFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
-  // --- Мои файлы (GitHub) — список и удаление ---
-const [listModels, setListModels] = useState<{path:string,size:number,url:string}[]>([]);
-const [listImages, setListImages] = useState<{path:string,size:number,url:string}[]>([]);
-const [listRepo, setListRepo] = useState<{repo:string, branch:string} | null>(null);
-const [listBusy, setListBusy] = useState(false);
-const [listMsg, setListMsg] = useState<string>("");
-
-function cdnFrom(path: string) {
-  if (!listRepo) return '';
-  return `https://cdn.jsdelivr.net/gh/${listRepo.repo}@${listRepo.branch}/${path}`;
-}
-
-async function refreshList(prefix: 'models' | 'images') {
-  try {
-    setListBusy(true);
-    const r = await fetch(`/api/gh-upload?list=1&prefix=${prefix}`);
-    const j = await r.json();
-    if (!r.ok || !j?.ok) {
-      setListMsg(`List ${prefix} failed: ${j?.error || r.statusText}`);
-      setListBusy(false);
-      return;
-    }
-    setListRepo({ repo: j.repo, branch: j.branch });
-    if (prefix === 'models') setListModels(j.items || []);
-    else setListImages(j.items || []);
-    setListMsg("");
-  } catch (e:any) {
-    setListMsg(String(e?.message || e));
-  } finally {
-    setListBusy(false);
-  }
-}
-
-async function deletePath(path: string) {
-  try {
-    setListBusy(true);
-    const r = await fetch('/api/gh-upload', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) });
-    const j = await r.json();
-    if (!r.ok || !j?.ok) { setListMsg(`Delete failed: ${j?.error || r.statusText}`); return; }
-    // Обновим оба списка
-    await Promise.all([refreshList('models'), refreshList('images')]);
-  } catch (e:any) {
-    setListMsg(String(e?.message || e));
-  } finally {
-    setListBusy(false);
-  }
-}
-
 
   const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target; setForm(s => ({ ...s, [name]: value }));
-	{/* E. Мои файлы (GitHub) — список и удаление */}
-<div className="bg-white border rounded-2xl p-6 grid gap-4 mb-8">
-  <div className="flex items-center justify-between">
-    <h2 className="text-lg font-semibold">Мои файлы в репозитории</h2>
-    <div className="flex gap-2">
-      <button type="button" onClick={()=>refreshList('models')} className="px-3 py-2 rounded-xl border">Обновить модели</button>
-      <button type="button" onClick={()=>refreshList('images')} className="px-3 py-2 rounded-xl border">Обновить картинки</button>
-    </div>
-  </div>
-  {listMsg && <div className="text-sm text-red-600">{listMsg}</div>}
-  <div className="grid md:grid-cols-2 gap-6">
-    <div>
-      <div className="font-medium mb-2">models/</div>
-      <div className="space-y-2">
-        {listModels.length === 0 ? <div className="text-sm text-gray-500">пусто</div> : listModels.map(it=>(
-          <div key={it.path} className="flex items-center gap-2 text-sm">
-            <code className="flex-1 break-all">{it.path}</code>
-            <span className="text-gray-500">{(it.size/1024).toFixed(1)} KB</span>
-            <a className="underline" href={cdnFrom(it.path)} target="_blank">ссылка</a>
-            <button className="text-red-600 underline" onClick={()=>deletePath(it.path)} disabled={listBusy}>удалить</button>
-          </div>
-        ))}
-      </div>
-    </div>
-    <div>
-      <div className="font-medium mb-2">images/</div>
-      <div className="space-y-2">
-        {listImages.length === 0 ? <div className="text-sm text-gray-500">пусто</div> : listImages.map(it=>(
-          <div key={it.path} className="flex items-center gap-2 text-sm">
-            <code className="flex-1 break-all">{it.path}</code>
-            <span className="text-gray-500">{(it.size/1024).toFixed(1)} KB</span>
-            <a className="underline" href={cdnFrom(it.path)} target="_blank">ссылка</a>
-            <button className="text-red-600 underline" onClick={()=>deletePath(it.path)} disabled={listBusy}>удалить</button>
-          </div>
-        ))}
-      </div>
-    </div>
-  </div>
-</div>
-
   };
 
   const makeItem = (): Item => ({
