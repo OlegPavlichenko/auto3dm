@@ -139,12 +139,25 @@ function SubmitPage() {
   };
 
   const uploadToGitHub = async () => {
-    if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
-    if (!file) { setStatus('Выберите файл картинки (.png/.jpg/.jpeg/.webp).'); return; }
-    const isImage = /^image\//.test(file.type) || /\.(png|jpe?g|webp)$/i.test(file.name);
-    if (!isImage) { setStatus('Сейчас принимаются только изображения (png/jpg/webp).'); return; }
+  const endpoint = UPLOAD_ENDPOINT || '/api/gh-upload';
+  if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
+  if (!localGlbFile) { setStatus('Выберите GLB файл.'); return; }
+  // <-- сюда добавляем проверку
+  // дальше у вас setUploading(true); и т.п.
 
     try {
+		  // Vercel serverless: реальный лимит тела запроса ~4.5 MB.
+  // Блокируем излишне большие GLB ещё на клиенте.
+  const MAX_MB = 4.2; // держим чуть ниже системного лимита
+  const sizeMb = localGlbFile.size / (1024 * 1024);
+  if (sizeMb > MAX_MB) {
+    setStatus(
+      `Файл ${sizeMb.toFixed(1)} MB > лимита ~${MAX_MB} MB для Vercel функций.\n` +
+      `Сожмите модель (gltfpack): npx gltfpack -i in.glb -o out.glb -cc -tc`
+    );
+    return;
+  }
+
       setUploading(true); setStatus('Загрузка на GitHub…');
       const fd = new FormData();
       fd.append('file', file, file.name || 'image.png');
@@ -165,6 +178,7 @@ function SubmitPage() {
       setUploading(false);
       setStatus('Ошибка: ' + (e?.message || e));
     }
+	
   };
 
   return (
