@@ -147,9 +147,9 @@ function SubmitPage() {
 
   const uploadToGitHub = async () => {
     if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
-    if (!file) { setStatus('Выберите файл картинки (.png/.jpg/.jpeg/.webp).'); return; }
-    const isImage = /^image\//.test(file.type) || /\.(png|jpe?g|webp)$/i.test(file.name);
-    if (!isImage) { setStatus('Сейчас принимаются только изображения (png/jpg/webp).'); return; }
+    if (!file) { setStatus('Выберите файл картинки (.glb/.png/.jpg/.jpeg/.webp).'); return; }
+    const isImage = /^image\//.test(file.type) || /\.(glb|png|jpe?g|webp)$/i.test(file.name);
+    if (!isImage) { setStatus('Сейчас принимаются только изображения (glb/png/jpg/webp).'); return; }
 
     try {
       setUploading(true); setStatus('Загрузка на GitHub…');
