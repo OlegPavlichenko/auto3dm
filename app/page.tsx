@@ -2,6 +2,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 
+// Allow NEXT_PUBLIC_* override for upload endpoint in client code
+// @ts-ignore
+declare const process: any;
+const UPLOAD_ENDPOINT: string =
+  (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_UPLOAD_ENDPOINT) ||
+  '/api/gh-upload';
+
 /**
  * Auto3D — GitHub‑only, static preview edition
  * --------------------------------------------
@@ -139,25 +146,12 @@ function SubmitPage() {
   };
 
   const uploadToGitHub = async () => {
-  const endpoint = UPLOAD_ENDPOINT || '/api/gh-upload';
-  if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
-  if (!localGlbFile) { setStatus('Выберите GLB файл.'); return; }
-  // <-- сюда добавляем проверку
-  // дальше у вас setUploading(true); и т.п.
+    if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
+    if (!file) { setStatus('Выберите файл картинки (.png/.jpg/.jpeg/.webp).'); return; }
+    const isImage = /^image\//.test(file.type) || /\.(png|jpe?g|webp)$/i.test(file.name);
+    if (!isImage) { setStatus('Сейчас принимаются только изображения (png/jpg/webp).'); return; }
 
     try {
-		  // Vercel serverless: реальный лимит тела запроса ~4.5 MB.
-  // Блокируем излишне большие GLB ещё на клиенте.
-  const MAX_MB = 4.2; // держим чуть ниже системного лимита
-  const sizeMb = localGlbFile.size / (1024 * 1024);
-  if (sizeMb > MAX_MB) {
-    setStatus(
-      `Файл ${sizeMb.toFixed(1)} MB > лимита ~${MAX_MB} MB для Vercel функций.\n` +
-      `Сожмите модель (gltfpack): npx gltfpack -i in.glb -o out.glb -cc -tc`
-    );
-    return;
-  }
-
       setUploading(true); setStatus('Загрузка на GitHub…');
       const fd = new FormData();
       fd.append('file', file, file.name || 'image.png');
@@ -165,7 +159,7 @@ function SubmitPage() {
       const rel = `${slug(form.brand||'brand')}/${slug(form.model||'model')}/${Date.now()}-${safeFileName(file.name||'image.png')}`;
       fd.append('path', rel);
 
-      const res = await fetch('/api/gh-upload', { method: 'POST', body: fd });
+      const res = await fetch(UPLOAD_ENDPOINT, { method: 'POST', body: fd });
       const data = await res.json().catch(()=>({}));
       setUploading(false);
       if (!res.ok || !data?.url) { setStatus(`Ошибка загрузки: HTTP ${res.status}${data?.error?` • ${data.error}`:''}`); return; }
@@ -178,7 +172,6 @@ function SubmitPage() {
       setUploading(false);
       setStatus('Ошибка: ' + (e?.message || e));
     }
-	
   };
 
   return (
