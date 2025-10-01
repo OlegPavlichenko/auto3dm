@@ -2,39 +2,129 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 
-// Allow NEXT_PUBLIC_* override for upload endpoint in client code
-// @ts-ignore
-declare const process: any;
-const UPLOAD_ENDPOINT: string =
-  (typeof process !== 'undefined' && process?.env?.NEXT_PUBLIC_UPLOAD_ENDPOINT) ||
-  '/api/gh-upload';
-
 /**
- * Auto3D — GitHub‑only, static preview edition
- * --------------------------------------------
- * Что изменил:
- * - Полностью убрал <model-viewer>, Supabase и Meshy: теперь только статичные картинки и загрузка на GitHub.
- * - Починил синтаксис и разметку — никаких «висячих» JSX‑блоков и дубликатов функций.
- * - Добавил простой роутер через query (?view=submit|rules|dmca).
- * - Кнопка «Загрузить на GitHub и добавить» отправляет файл в /api/gh-upload и сразу добавляет карточку.
- * - Карточки сохраняются в localStorage (видно только на этом устройстве). Можно дополнительно дублировать метаданные в репо, если нужно — скажешь, добавлю.
+ * Auto3D — GitHub‑only minimal (static previews)
+ * --------------------------------------------------
+ * Что изменилось:
+ * - Полностью убрал <model-viewer> и любые 3D‑вьюверы (не нужен CORS/GLB‑рендеринг).
+ * - Оставлена ТОЛЬКО загрузка на GitHub через API‑роут /api/gh-upload.
+ * - Разделил загрузчики: «Модель (.glb)» и «Превью‑картинка (png/jpg/webp)».
+ * - Карточки каталога показывают статичную картинку (если есть), а кнопка «Скачать» ведёт на GLB.
+ * - Локальное сохранение каталога — через localStorage (видно только на этом устройстве).
+ *
+ * ВАЖНО: Для работы аплоада нужны переменные окружения на сервере (Vercel → Project → Settings → Env):
+ *   GH_TOKEN   — PAT c правами Repository contents: Read and write
+ *   GH_REPO    — например OlegPavlichenko/auto3dm
+ *   GH_BRANCH  — main
+ * И файл app/api/gh-upload/route.ts (см. ниже в комментарии «API ROUTE»)
  */
 
-// ===== Types =====
+/**
+ * ======================= API ROUTE (создай файл) =======================
+ * Скопируй следующий файл целиком в: app/api/gh-upload/route.ts
+ * Он принимает FormData { file, kind, brand, model } и кладёт в твой репозиторий.
+ * kind = "model" сохраняет только .glb → в папку models/…  (лимит ~4.5MB)
+ * kind = "image" разрешает png/jpg/webp → в папку images/… (лимит ~4.5MB)
+ * Возвращает JSON { ok:true, url:"https://cdn.jsdelivr.net/..." }
+ * ----------------------------------------------------------------------
+ */
+/*
+import { NextRequest, NextResponse } from 'next/server';
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
+
+function slug(v: string): string {
+  try {
+    return (v || '')
+      .toString()
+      .normalize('NFKD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-zA-Z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase();
+  } catch { return 'x'; }
+}
+function safeFileName(name: string): string {
+  return (name || 'file.bin').replace(/[^a-zA-Z0-9_.-]/g, '_');
+}
+function env() {
+  const token = process.env.GH_TOKEN?.trim() || '';
+  const repo  = process.env.GH_REPO?.trim()  || '';
+  const branch= process.env.GH_BRANCH?.trim()|| 'main';
+  return { token, repo, branch };
+}
+
+export async function GET() {
+  const { token, repo, branch } = env();
+  const hasToken = !!token; const hasRepo = !!repo;
+  if (!hasToken || !hasRepo) {
+    return NextResponse.json({ ok:false, error:'Missing GH_TOKEN or GH_REPO env', hasToken, hasRepo, branch }, { status:200 });
+  }
+  const whoRes = await fetch('https://api.github.com/user', { headers:{ Authorization:`Bearer ${token}`, 'User-Agent':'auto3dm' } });
+  const repoRes= await fetch(`https://api.github.com/repos/${repo}`, { headers:{ Authorization:`Bearer ${token}`, 'User-Agent':'auto3dm' } });
+  const who = await whoRes.json().catch(()=>null);
+  const j   = await repoRes.json().catch(()=>null);
+  return NextResponse.json({ ok: whoRes.ok && repoRes.ok, status:{ who: whoRes.status, repo: repoRes.status }, whoami: whoRes.ok?{login:who?.login}:null, repo: repoRes.ok?{full_name:j?.full_name, permissions:j?.permissions}:null, branch }, { status:200 });
+}
+
+export async function POST(req: NextRequest) {
+  const { token, repo, branch } = env();
+  if (!token || !repo) return NextResponse.json({ ok:false, error:'Missing GH_TOKEN or GH_REPO env' }, { status:500 });
+  const form = await req.formData();
+  const file = form.get('file') as File | null;
+  const kind = (form.get('kind') as string) || 'model'; // 'model' | 'image'
+  const brand = (form.get('brand') as string) || 'brand';
+  const model = (form.get('model') as string) || 'model';
+  if (!file) return NextResponse.json({ ok:false, error:'No file' }, { status:400 });
+
+  const name = file.name || 'file.bin';
+  const lc = name.toLowerCase();
+  if (kind === 'model') {
+    if (!lc.endsWith('.glb')) return NextResponse.json({ ok:false, error:'Only .glb allowed' }, { status:400 });
+  } else if (kind === 'image') {
+    if (!(lc.endsWith('.png') || lc.endsWith('.jpg') || lc.endsWith('.jpeg') || lc.endsWith('.webp'))) {
+      return NextResponse.json({ ok:false, error:'Images only: png/jpg/webp' }, { status:400 });
+    }
+  } else {
+    return NextResponse.json({ ok:false, error:'Bad kind' }, { status:400 });
+  }
+
+  const ab = await file.arrayBuffer();
+  const MAX = 4.5 * 1024 * 1024;
+  if (ab.byteLength > MAX) return NextResponse.json({ ok:false, error:`File too large ${(ab.byteLength/1024/1024).toFixed(1)} MB` }, { status:413 });
+
+  const folder = kind === 'model' ? 'models' : 'images';
+  const relPath = `${folder}/${slug(brand)}/${slug(model)}/${Date.now()}-${safeFileName(name)}`;
+  const contentB64 = Buffer.from(ab).toString('base64');
+  const putUrl = `https://api.github.com/repos/${repo}/contents/${relPath}`;
+  const gh = await fetch(putUrl, {
+    method:'PUT',
+    headers:{ Authorization:`Bearer ${token}`, 'Content-Type':'application/json', 'User-Agent':'auto3dm' },
+    body: JSON.stringify({ message:`upload ${relPath}`, branch, content: contentB64 })
+  });
+  if (!gh.ok) return NextResponse.json({ ok:false, error:`GitHub PUT ${gh.status}: ${await gh.text()}` }, { status:500 });
+
+  const cdn = `https://cdn.jsdelivr.net/gh/${repo}@${branch}/${relPath}`;
+  return NextResponse.json({ ok:true, url: cdn, path: relPath, kind }, { status:200 });
+}
+*/
+
+// ======================= CLIENT CODE (эта страница) =======================
+
+// Тип карточки
 export type Item = {
   id: string;
   brand: string;
   model: string;
   title: string;
   subsystem: string;
-  // Для статического превью используем image
-  image?: string; // URL статичной картинки (png/jpg/webp)
-  // Для скачивания храним ссылку (например, на GLB или zip) — опционально
-  download?: string;
+  image?: string;     // превью (png/jpg/webp)
+  download: string;   // ссылка на .glb (скачать)
 };
 
-// ===== Local storage =====
-const LS_KEY = 'auto3d-items-v2-static';
+// Локальное хранилище каталога (только в этом браузере)
+const LS_KEY = 'auto3d-items-v2';
 function readLocalItems(): Item[] {
   if (typeof window === 'undefined') return [];
   try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch { return []; }
@@ -49,243 +139,193 @@ function addLocalItem(item: Item) {
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('local-items-updated'));
 }
 
-// ===== Small helpers =====
-function slug(v: string): string {
-  try {
-    return (v || '')
-      .toString()
-      .normalize('NFKD')
-      .replace(/[̀-ͯ]/g, '')
-      .replace(/[^a-zA-Z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .toLowerCase();
-  } catch { return 'x'; }
-}
-function safeFileName(name: string): string { return (name || 'file').replace(/[^a-zA-Z0-9_.-]/g, '_'); }
-
-// ===== Minimal client router (no next/navigation) =====
+// Мини‑роутер на одном / (без next/navigation)
 function useView() {
   const [view, setView] = useState<string>('');
   useEffect(() => {
     if (typeof window === 'undefined') return;
-
-    // Патчим history API, чтобы отправлять событие при push/replace
-    const w = window as any;
-    if (!w.__auto3d_history_patched) {
-      const wrap = (fn: any) => function(this: any, ...args: any[]) {
-        const ret = fn.apply(this, args);
-        try { window.dispatchEvent(new Event('url-change')); } catch {}
-        return ret;
-      };
-      try {
-        history.pushState = wrap(history.pushState);
-        history.replaceState = wrap(history.replaceState);
-        w.__auto3d_history_patched = true;
-      } catch {}
-    }
-
     const sync = () => {
       const url = new URL(window.location.href);
       const pathname = url.pathname.toLowerCase();
-      // Мягкие редиректы на один маршрут с query
+      // мягкие редиректы на /?view=...
       if (pathname === '/submit' || pathname === '/sumbit') { url.pathname = '/'; url.searchParams.set('view','submit'); history.replaceState({}, '', url.toString()); }
-      if (pathname === '/rules') { url.pathname = '/'; url.searchParams.set('view','rules'); history.replaceState({}, '', url.toString()); }
-      if (pathname === '/dmca') { url.pathname = '/'; url.searchParams.set('view','dmca'); history.replaceState({}, '', url.toString()); }
+      if (pathname === '/rules')  { url.pathname = '/'; url.searchParams.set('view','rules');  history.replaceState({}, '', url.toString()); }
+      if (pathname === '/dmca')   { url.pathname = '/'; url.searchParams.set('view','dmca');   history.replaceState({}, '', url.toString()); }
       setView((url.searchParams.get('view') || '').toLowerCase());
     };
-
     sync();
     const onChange = () => sync();
     window.addEventListener('popstate', onChange);
     window.addEventListener('hashchange', onChange);
-    window.addEventListener('url-change', onChange);
     return () => {
       window.removeEventListener('popstate', onChange);
       window.removeEventListener('hashchange', onChange);
-      window.removeEventListener('url-change', onChange);
     };
   }, []);
   return view;
 }
 
-// ===== Pages =====
+// Заглушки/демо карточки
+const initialItems: Item[] = [
+  { id:'kia-carnival-1', brand:'Kia', model:'Carnival', title:'Cupholder insert (demo)', subsystem:'interior', image:'https://placehold.co/800x450?text=Kia+Cupholder', download:'https://example.com/model.glb' },
+  { id:'toyota-bb-1',    brand:'Toyota', model:'bB',   title:'Cargo hook (demo)',        subsystem:'interior', image:'https://placehold.co/800x450?text=Toyota+Hook',   download:'https://example.com/model.glb' },
+  { id:'vw-golf3-1',     brand:'Volkswagen', model:'Golf 3', title:'Vent clip mount (demo)', subsystem:'interior', image:'https://placehold.co/800x450?text=Golf+3+Vent', download:'https://example.com/model.glb' },
+];
+
+// ===== Страница добавления =====
 function SubmitPage() {
   const [form, setForm] = useState({
-    author: '', email: '', brand: '', model: '', title: '', subsystem: 'interior',
-    description: '', download: ''
+    author:'', email:'', brand:'', model:'', title:'', subsystem:'interior', description:'',
+    image:'', download:''
   });
   const [agree, setAgree] = useState(false);
-  const [status, setStatus] = useState<string>('');
-  const [file, setFile] = useState<File | null>(null);
+  const [status, setStatus] = useState('');
+  const [glbFile, setGlbFile] = useState<File | null>(null);
+  const [imgFile, setImgFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
 
   const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-    const { name, value } = e.target; setForm((s) => ({ ...s, [name]: value }));
+    const { name, value } = e.target; setForm(s => ({ ...s, [name]: value }));
   };
 
-  const makeItem = (imageUrl?: string, downloadUrl?: string): Item => ({
+  const makeItem = (): Item => ({
     id: `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
     brand: form.brand.trim() || 'Custom',
     model: form.model.trim() || 'Model',
-    title: form.title.trim() || (file?.name || 'Item'),
+    title: form.title.trim() || 'Custom model',
     subsystem: form.subsystem || 'interior',
-    image: imageUrl,
-    download: downloadUrl || form.download.trim() || imageUrl,
+    image: form.image || undefined,
+    download: form.download || ''
   });
 
-  const addLocalImageOnly = () => {
-    if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
-    if (!form.download && !file) { setStatus('Выберите файл или укажите ссылку на картинку.'); return; }
-    // Если пользователь указал внешнюю ссылку на картинку
-    if (!file && form.download) {
-      addLocalItem(makeItem(form.download, form.download));
-      setStatus('Карточка добавлена (с внешней картинкой).');
+  async function upload(kind: 'model'|'image') {
+    const endpoint = '/api/gh-upload';
+    const file = kind === 'model' ? glbFile : imgFile;
+    if (!file) { setStatus(kind==='model'?'Выберите .glb файл.':'Выберите картинку (png/jpg/webp).'); return; }
+
+    // клиентская проверка расширения — для понятных сообщений
+    const name = (file.name||'').toLowerCase();
+    if (kind==='model' && !name.endsWith('.glb')) { setStatus('Сейчас принимаются только модели .glb'); return; }
+    if (kind==='image' && !(name.endsWith('.png')||name.endsWith('.jpg')||name.endsWith('.jpeg')||name.endsWith('.webp'))) {
+      setStatus('Сейчас принимаются только изображения (png/jpg/webp).'); return;
+    }
+
+    // лимит для serverless (~4.5MB)
+    const MAX_MB = 4.2;
+    const sizeMb = file.size / (1024*1024);
+    if (sizeMb > MAX_MB) {
+      setStatus(`Файл ${sizeMb.toFixed(1)} MB превышает лимит ~${MAX_MB} MB. Сожмите файл (для .glb — gltfpack).`);
       return;
     }
-    setStatus('Чтобы добавить локальный файл — используйте загрузку на GitHub ниже.');
-  };
-
-  const uploadToGitHub = async () => {
-    if (!agree) { setStatus('Поставьте галочку согласия с правилами.'); return; }
-    if (!file) { setStatus('Выберите файл картинки (.glb/.png/.jpg/.jpeg/.webp).'); return; }
-    const isImage = /^image\//.test(file.type) || /\.(glb|png|jpe?g|webp)$/i.test(file.name);
-    if (!isImage) { setStatus('Сейчас принимаются только изображения (glb/png/jpg/webp).'); return; }
 
     try {
       setUploading(true); setStatus('Загрузка на GitHub…');
       const fd = new FormData();
-      fd.append('file', file, file.name || 'image.png');
-      // Красивый путь в репо: brand/model/timestamp-filename
-      const rel = `${slug(form.brand||'brand')}/${slug(form.model||'model')}/${Date.now()}-${safeFileName(file.name||'image.png')}`;
-      fd.append('path', rel);
-
-      const res = await fetch(UPLOAD_ENDPOINT, { method: 'POST', body: fd });
+      fd.append('file', file, file.name|| (kind==='model'?'model.glb':'preview.png'));
+      fd.append('kind', kind);
+      fd.append('brand', form.brand || 'brand');
+      fd.append('model', form.model || 'model');
+      const res = await fetch(endpoint, { method:'POST', body: fd });
       const data = await res.json().catch(()=>({}));
       setUploading(false);
-      if (!res.ok || !data?.url) { setStatus(`Ошибка загрузки: HTTP ${res.status}${data?.error?` • ${data.error}`:''}`); return; }
-
-      const url: string = data.url; // CDN (jsDelivr)
-      const item = makeItem(url, url);
-      addLocalItem(item);
-      setStatus('Готово! Файл загружен на GitHub и карточка добавлена.');
+      if (!res.ok || !data?.ok || !data?.url) {
+        setStatus(`Ошибка загрузки: HTTP ${res.status} • ${data?.error || res.statusText}`);
+        return;
+      }
+      if (kind==='model') setForm(s=>({ ...s, download: data.url }));
+      else setForm(s=>({ ...s, image: data.url }));
+      setStatus('Готово! Ссылка добавлена в форму. Теперь «Добавить в каталог (локально)».');
     } catch (e: any) {
       setUploading(false);
       setStatus('Ошибка: ' + (e?.message || e));
     }
+  }
+
+  const addLocal = () => {
+    if (!agree) { setStatus('Поставьте галочку согласия.'); return; }
+    if (!form.download) { setStatus('Нет ссылки на .glb. Загрузите модель или вставьте ссылку.'); return; }
+    const item = makeItem();
+    addLocalItem(item);
+    setStatus('Модель добавлена в локальный каталог. Открой «Каталог», чтобы увидеть карточку.');
   };
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
-      <h1 className="text-2xl font-bold mb-2">Добавить модель (картинка)</h1>
-      <p className="text-gray-600 mb-6">Сейчас поддерживаем <b>статичные изображения</b> (png/jpg/webp). 3D‑просмотр временно отключён.</p>
+      <h1 className="text-2xl font-bold mb-2">Добавить модель</h1>
+      <p className="text-gray-600 mb-6">Теперь работаем только со статичными превью и загрузкой .glb в GitHub. Предпросмотра 3D нет — показываем картинку.</p>
 
+      {/* A. Загрузка модели (.glb) → GitHub */}
       <div className="bg-white border rounded-2xl p-6 grid gap-4 mb-8">
-        <div className="grid gap-2 sm:grid-cols-2">
-          <label className="grid gap-1"><span className="text-sm text-gray-600">Марка</span><input name="brand" value={form.brand} onChange={onChange} className="px-3 py-2 rounded-xl border" required/></label>
-          <label className="grid gap-1"><span className="text-sm text-gray-600">Модель</span><input name="model" value={form.model} onChange={onChange} className="px-3 py-2 rounded-xl border" required/></label>
-        </div>
-        <label className="grid gap-1"><span className="text-sm text-gray-600">Название</span><input name="title" value={form.title} onChange={onChange} className="px-3 py-2 rounded-xl border" required/></label>
-        <label className="grid gap-1"><span className="text-sm text-gray-600">Узел</span>
-          <select name="subsystem" value={form.subsystem} onChange={onChange} className="px-3 py-2 rounded-xl border">
-            <option value="interior">interior</option>
-            <option value="body">body</option>
-            <option value="electrical">electrical</option>
-            <option value="suspension">suspension</option>
-            <option value="engine">engine</option>
-            <option value="transmission">transmission</option>
-          </select>
+        <h2 className="text-lg font-semibold">1) Загрузить модель (.glb) на GitHub</h2>
+        <label className="grid gap-1">
+          <span className="text-sm text-gray-600">Файл модели (.glb)</span>
+          <input type="file" accept=".glb" onChange={e=>setGlbFile(e.target.files?.[0]||null)} className="px-3 py-2 rounded-xl border" />
         </label>
-        <label className="grid gap-1"><span className="text-sm text-gray-600">Описание (необязательно)</span><textarea name="description" value={form.description} onChange={onChange} className="px-3 py-2 rounded-xl border"/></label>
-
-        {/* Вариант A: просто добавить внешнюю ссылку на картинку (без загрузки) */}
-        <div className="grid gap-1">
-          <span className="text-sm text-gray-600">Прямая ссылка на картинку (опционально)</span>
-          <input name="download" value={form.download} onChange={onChange} className="px-3 py-2 rounded-xl border" placeholder="https://.../image.png"/>
-          <div className="flex items-center gap-3 mt-2">
-            <button type="button" onClick={addLocalImageOnly} disabled={!agree} className={agree?"px-4 py-2 rounded-xl border":"px-4 py-2 rounded-xl border bg-gray-200 text-gray-500 cursor-not-allowed"}>Добавить без загрузки</button>
-            <span className="text-xs text-gray-500">Ссылка должна быть общедоступной.</span>
-          </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="grid gap-1"><span className="text-sm text-gray-600">Марка</span><input name="brand" value={form.brand} onChange={onChange} className="px-3 py-2 rounded-xl border" placeholder="Kia" /></label>
+          <label className="grid gap-1"><span className="text-sm text-gray-600">Модель авто</span><input name="model" value={form.model} onChange={onChange} className="px-3 py-2 rounded-xl border" placeholder="Carnival" /></label>
         </div>
+        <button type="button" onClick={()=>upload('model')} disabled={!glbFile || uploading} className={!glbFile||uploading?"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed":"px-4 py-2 rounded-xl bg-black text-white"}>{uploading? 'Загружаем…':'Загрузить модель в репозиторий'}</button>
+        {form.download && <div className="text-xs text-green-700">GLB URL: <a className="underline" href={form.download} target="_blank">{form.download}</a></div>}
+      </div>
 
-        {/* Вариант B: загрузить файл на GitHub через API */}
-        <div className="grid gap-1">
-          <span className="text-sm text-gray-600">Файл картинки (png/jpg/webp)</span>
-          <input type="file" accept=".png,.jpg,.jpeg,.webp" onChange={(e)=>setFile(e.target.files?.[0]||null)} className="px-3 py-2 rounded-xl border"/>
-          <div className="flex items-center gap-3 mt-2">
-            <button type="button" onClick={uploadToGitHub} disabled={!file || !agree || uploading} className={!file || !agree || uploading?"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed":"px-4 py-2 rounded-xl bg-black text-white"}>{uploading? 'Загружаем…':'Загрузить на GitHub и добавить'}</button>
-            <span className="text-xs text-gray-500">Файл будет доступен через CDN (jsDelivr).</span>
-          </div>
+      {/* B. Загрузка превью‑картинки → GitHub */}
+      <div className="bg-white border rounded-2xl p-6 grid gap-4 mb-8">
+        <h2 className="text-lg font-semibold">2) Загрузить превью (png/jpg/webp) на GitHub</h2>
+        <label className="grid gap-1">
+          <span className="text-sm text-gray-600">Картинка</span>
+          <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e=>setImgFile(e.target.files?.[0]||null)} className="px-3 py-2 rounded-xl border" />
+        </label>
+        <button type="button" onClick={()=>upload('image')} disabled={!imgFile || uploading} className={!imgFile||uploading?"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed":"px-4 py-2 rounded-xl border"}>Загрузить превью в репозиторий</button>
+        {form.image && <div className="text-xs text-green-700">IMAGE URL: <a className="underline" href={form.image} target="_blank">{form.image}</a></div>}
+      </div>
+
+      {/* C. Карточка: метаданные и добавление в локальный каталог */}
+      <div className="bg-white border rounded-2xl p-6 grid gap-4">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="grid gap-1"><span className="text-sm text-gray-600">Название модели</span><input name="title" value={form.title} onChange={onChange} className="px-3 py-2 rounded-xl border" placeholder="Cupholder insert"/></label>
+          <label className="grid gap-1"><span className="text-sm text-gray-600">Узел</span>
+            <select name="subsystem" value={form.subsystem} onChange={onChange} className="px-3 py-2 rounded-xl border">
+              <option value="interior">interior</option>
+              <option value="body">body</option>
+              <option value="electrical">electrical</option>
+              <option value="suspension">suspension</option>
+              <option value="engine">engine</option>
+              <option value="transmission">transmission</option>
+            </select>
+          </label>
         </div>
-
-        <label className="flex items-start gap-2 text-sm mt-2"><input type="checkbox" checked={agree} onChange={(e)=>setAgree(!!e.target.checked)} required/> <span>Я согласен с <Link className="underline" href="/?view=rules">Правилами</Link> и <Link className="underline" href="/?view=dmca">DMCA/удалением</Link>.</span></label>
+        <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={agree} onChange={e=>setAgree(!!e.target.checked)} /> <span>Я согласен с <Link className="underline" href="/?view=rules">Правилами</Link> и <Link className="underline" href="/?view=dmca">DMCA/удалением</Link>.</span></label>
+        <button type="button" onClick={addLocal} disabled={!agree} className={!agree?"px-4 py-2 rounded-xl bg-gray-300 text-gray-600 cursor-not-allowed":"px-4 py-2 rounded-xl bg-black text-white"}>Добавить в каталог (локально)</button>
         {status && <div className="text-sm text-gray-700 bg-gray-50 border rounded-xl p-3">{status}</div>}
       </div>
     </div>
   );
 }
 
+// ===== Правила и DMCA простые страницы =====
 function RulesPage() {
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
       <h1 className="text-2xl font-bold mb-2">Правила публикации</h1>
-      <p className="text-gray-600 mb-4">Эти правила помогают поддерживать качество и законность контента.</p>
-      <div className="bg-white border rounded-2xl p-6 space-y-4 text-sm leading-6">
-        <section>
-          <h2 className="font-semibold">1. Что можно публиковать</h2>
-          <ul className="list-disc ml-5">
-            <li>3D‑модели/фото авто‑компонентов: крепления, адаптеры, органайзеры, декоративные элементы.</li>
-            <li>Контент должен принадлежать вам или распространяться по лицензии, позволяющей публикацию.</li>
-          </ul>
-        </section>
-        <section>
-          <h2 className="font-semibold">2. Что нельзя</h2>
-          <ul className="list-disc ml-5">
-            <li>Нарушение прав третьих лиц (бренды, логотипы, коммерческие CAD без разрешения).</li>
-            <li>Опасные детали безопасности без дисклеймера.</li>
-            <li>Незаконный/вредоносный контент.</li>
-          </ul>
-        </section>
-        <section>
-          <h2 className="font-semibold">3. Файлы и предпросмотр</h2>
-          <ul className="list-disc ml-5">
-            <li>Пока поддерживаем статичные изображения (png/jpg/webp). 3D‑просмотр позже.</li>
-            <li>Ссылки на картинки должны быть доступны без авторизации.</li>
-          </ul>
-        </section>
-        <section>
-          <h2 className="font-semibold">4. Лицензии</h2>
-          <p>Рекомендуем: CC BY, CC BY‑NC, CC0, MIT. Указывайте автора и лицензию.</p>
-        </section>
-        <section>
-          <h2 className="font-semibold">5. Модерация</h2>
-          <p>Жалобы и запросы — на контактный email на сайте.</p>
-        </section>
-      </div>
+      <ul className="list-disc ml-6 text-sm text-gray-700 space-y-2">
+        <li>Загружайте только то, что вы имеете право распространять.</li>
+        <li>Модель — в формате .glb (желательно до ~4MB).</li>
+        <li>Превью — png/jpg/webp (до ~4MB).</li>
+      </ul>
     </div>
   );
 }
-
 function DmcaPage() {
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
-      <h1 className="text-2xl font-bold mb-2">DMCA / Удаление по запросу</h1>
-      <p className="text-gray-600 mb-4">Если вы считаете, что материал нарушает ваши права, отправьте запрос на удаление.</p>
-      <div className="bg-white border rounded-2xl p-6 space-y-4 text-sm leading-6">
-        <section>
-          <h2 className="font-semibold">Как отправить запрос</h2>
-          <ol className="list-decimal ml-5">
-            <li>Ссылка(и) на материал(ы), которые нужно удалить.</li>
-            <li>Данные правообладателя и контакт для связи.</li>
-            <li>Подтверждение прав.</li>
-            <li>Описание нарушения и желаемые действия.</li>
-          </ol>
-        </section>
-      </div>
+      <h1 className="text-2xl font-bold mb-2">DMCA / Удаление</h1>
+      <p className="text-gray-700 text-sm">Пишите на contact@example.com, указывая ссылки на материалы и подтверждение прав.</p>
     </div>
   );
 }
 
-// ===== Catalog =====
+// ===== Каталог =====
 function CatalogApp() {
   const [q, setQ] = useState('');
   const [brand, setBrand] = useState('');
@@ -295,59 +335,62 @@ function CatalogApp() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    setLocalItems(readLocalItems());
-    const onLocal = () => setLocalItems(readLocalItems());
-    window.addEventListener('local-items-updated', onLocal);
-    window.addEventListener('storage', onLocal);
-    return () => { window.removeEventListener('local-items-updated', onLocal); window.removeEventListener('storage', onLocal); };
+    const sync = () => setLocalItems(readLocalItems());
+    sync();
+    window.addEventListener('local-items-updated', sync);
+    window.addEventListener('storage', sync);
+    return () => { window.removeEventListener('local-items-updated', sync); window.removeEventListener('storage', sync); };
   }, []);
 
-  const catalog = useMemo(() => localItems, [localItems]);
+  const catalog = useMemo(() => {
+    return [...localItems, ...initialItems];
+  }, [localItems]);
+
   const brands = useMemo(() => Array.from(new Set(catalog.map(i=>i.brand))).sort(), [catalog]);
   const models = useMemo(() => Array.from(new Set(catalog.filter(i=>!brand || i.brand===brand).map(i=>i.model))).sort(), [brand, catalog]);
   const subsystems = useMemo(() => Array.from(new Set(catalog.map(i=>i.subsystem))).sort(), [catalog]);
 
-  const items = useMemo(() => catalog.filter((i) => {
+  const items = useMemo(() => catalog.filter(i => {
     const ql = q.toLowerCase();
     const matchQ = !q || i.title.toLowerCase().includes(ql) || i.brand.toLowerCase().includes(ql) || i.model.toLowerCase().includes(ql);
-    const matchBrand = !brand || i.brand === brand;
-    const matchModel = !model || i.model === model;
-    const matchSubsystem = !subsystem || i.subsystem === subsystem;
+    const matchBrand = !brand || i.brand===brand;
+    const matchModel = !model || i.model===model;
+    const matchSubsystem = !subsystem || i.subsystem===subsystem;
     return matchQ && matchBrand && matchModel && matchSubsystem;
   }), [q, brand, model, subsystem, catalog]);
 
   return (
     <main className="max-w-6xl mx-auto px-4 py-6">
-      <p className="text-gray-600 mb-4">Каталог показывает локально добавленные карточки (картинки). Чтобы добавить новую — перейдите на вкладку «Добавить модель».</p>
+      <p className="text-gray-600 mb-4">Карточки показывают <b>картинку‑превью</b> и ссылку на скачивание <b>.glb</b>. Чтобы добавить свою — зайдите на «Добавить модель».</p>
       <div className="flex flex-wrap gap-2 items-center mb-4">
-        <input value={q} onChange={(e)=>setQ(e.target.value)} placeholder="Поиск: Kia, Golf 3..." className="px-3 py-2 rounded-xl border w-64 focus:outline-none focus:ring"/>
-        <select value={brand} onChange={(e)=>{ setBrand(e.target.value); setModel(''); }} className="px-3 py-2 rounded-xl border"><option value="">Марка</option>{brands.map(b=>(<option key={b} value={b}>{b}</option>))}</select>
-        <select value={model} onChange={(e)=>setModel(e.target.value)} className="px-3 py-2 rounded-xl border"><option value="">Модель</option>{models.map(m=>(<option key={m} value={m}>{m}</option>))}</select>
-        <select value={subsystem} onChange={(e)=>setSubsystem(e.target.value)} className="px-3 py-2 rounded-xl border"><option value="">Узел</option>{subsystems.map(s=>(<option key={s} value={s}>{s}</option>))}</select>
+        <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Поиск: Kia, Golf 3, cupholder..." className="px-3 py-2 rounded-xl border w-64 focus:outline-none focus:ring" />
+        <select value={brand} onChange={e=>{ setBrand(e.target.value); setModel(''); }} className="px-3 py-2 rounded-xl border"><option value="">Марка</option>{brands.map(b=>(<option key={b} value={b}>{b}</option>))}</select>
+        <select value={model} onChange={e=>setModel(e.target.value)} className="px-3 py-2 rounded-xl border"><option value="">Модель</option>{models.map(m=>(<option key={m} value={m}>{m}</option>))}</select>
+        <select value={subsystem} onChange={e=>setSubsystem(e.target.value)} className="px-3 py-2 rounded-xl border"><option value="">Узел</option>{subsystems.map(s=>(<option key={s} value={s}>{s}</option>))}</select>
         <button onClick={()=>{ setQ(''); setBrand(''); setModel(''); setSubsystem(''); }} className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-100">Сброс</button>
         <Link href="/?view=submit" className="ml-auto px-3 py-2 rounded-xl bg-black text-white text-sm">Добавить модель</Link>
       </div>
 
-      {items.length === 0 ? (
-        <div className="p-6 rounded-2xl bg-white border shadow-sm">Ничего не найдено. Добавьте хотя бы одну карточку на вкладке «Добавить модель».</div>
+      {items.length===0 ? (
+        <div className="p-6 rounded-2xl bg-white border shadow-sm">Ничего не найдено. Попробуйте изменить фильтры.</div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {items.map((i) => (
+          {items.map(i => (
             <article key={i.id} className="bg-white rounded-2xl border shadow-sm overflow-hidden hover:shadow-md transition">
-              <div className="bg-gray-100 flex items-center justify-center" style={{ aspectRatio: '16 / 9' }}>
+              <div className="bg-gray-100 flex items-center justify-center" style={{ aspectRatio:'16 / 9' }}>
                 {i.image ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={i.image} alt={i.title} className="w-full h-full object-contain"/>
+                  <img src={i.image} alt={i.title} className="w-full h-full object-cover" />
                 ) : (
-                  <div className="text-gray-500 text-sm p-6">Нет предпросмотра</div>
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={`https://placehold.co/800x450?text=${encodeURIComponent(i.brand+' '+i.model)}`} alt={i.title} className="w-full h-full object-cover" />
                 )}
               </div>
               <div className="p-4">
                 <div className="text-sm text-gray-500">{i.brand} • {i.model} • {i.subsystem}</div>
                 <h3 className="text-lg font-semibold mt-1">{i.title}</h3>
                 <div className="mt-3 flex gap-2">
-                  {i.download && <a href={i.download} className="px-3 py-2 rounded-xl bg-black text-white text-sm" target="_blank" rel="noopener noreferrer">Открыть</a>}
-                  <button onClick={()=>{ try { if (typeof window!=='undefined') navigator.clipboard.writeText(window.location.href + '#' + i.id); } catch {} }} className="px-3 py-2 rounded-xl border text-sm">Поделиться</button>
+                  <a href={i.download} className="px-3 py-2 rounded-xl bg-black text-white text-sm" target="_blank" rel="noopener noreferrer">Скачать .glb</a>
                 </div>
               </div>
             </article>
@@ -358,30 +401,29 @@ function CatalogApp() {
   );
 }
 
-// ===== App Shell & Router =====
+// ===== Общий каркас =====
 function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="sticky top-0 z-10 backdrop-blur bg-white/70 border-b">
         <div className="max-w-6xl mx-auto px-4 py-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <h1 className="text-2xl font-bold tracking-tight">Auto3D <span className="text-gray-500 text-base">static demo</span></h1>
+          <h1 className="text-2xl font-bold tracking-tight">Auto3D <span className="text-gray-500 text-base">(static)</span></h1>
           <nav className="flex flex-wrap gap-2 items-center text-sm">
             <Link href="/" className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-100">Каталог</Link>
             <Link href="/?view=submit" className="px-3 py-2 rounded-xl bg-black text-white hover:opacity-90">Добавить модель</Link>
             <Link href="/?view=rules" className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-100">Правила</Link>
-            <Link href="/?view=dmca" className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-100">DMCA/Удаление</Link>
+            <Link href="/?view=dmca" className="px-3 py-2 rounded-xl border bg-white hover:bg-gray-100">DMCA</Link>
           </nav>
         </div>
       </header>
-
       {children}
-
       <footer className="max-w-6xl mx-auto px-4 py-10 text-sm text-gray-500">
         <div className="border-t pt-6 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <div>© {new Date().getFullYear()} Auto3D — статичный предпросмотр</div>
+          <div>© {new Date().getFullYear()} Auto3D — демо</div>
           <div className="flex gap-3">
             <a className="underline" href="https://vercel.com/">Vercel</a>
             <a className="underline" href="https://github.com/">GitHub</a>
+            <a className="underline" href="https://www.jsdelivr.com/">jsDelivr</a>
           </div>
         </div>
       </footer>
@@ -393,7 +435,7 @@ export default function AppRouter() {
   const view = useView();
   let page: React.ReactNode = <CatalogApp />;
   if (view === 'submit') page = <SubmitPage />;
-  else if (view === 'rules') page = <RulesPage />;
-  else if (view === 'dmca') page = <DmcaPage />;
+  if (view === 'rules')  page = <RulesPage />;
+  if (view === 'dmca')   page = <DmcaPage />;
   return <AppShell>{page}</AppShell>;
 }
